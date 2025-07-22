@@ -1,14 +1,13 @@
 import numpy as np
 import pandas as pd
 
-def find_order_density_clusters(df_filtered, min_cluster_size=30):
+def find_order_density_clusters(df_filtered, min_cluster_size=30, grid_size=0.005):
     """Find high-density order clusters for feeder warehouse placement"""
     # Create density grid (finer grid for better cluster detection)
     lat_min, lat_max = df_filtered['order_lat'].min(), df_filtered['order_lat'].max()
     lon_min, lon_max = df_filtered['order_long'].min(), df_filtered['order_long'].max()
     
-    # Use smaller grid cells for better granularity (0.005 degrees ≈ 0.5km for better coverage)
-    grid_size = 0.005  # degrees - reduced for better granularity
+    # Use configurable grid size
     lat_steps = int((lat_max - lat_min) / grid_size) + 1
     lon_steps = int((lon_max - lon_min) / grid_size) + 1
     
@@ -58,7 +57,7 @@ def find_order_density_clusters(df_filtered, min_cluster_size=30):
     
     return density_clusters
 
-def place_feeder_warehouses_near_clusters(density_clusters, big_warehouses, max_distance_from_big=8.0):
+def place_feeder_warehouses_near_clusters(density_clusters, big_warehouses, max_distance_from_big=8.0, delivery_radius=2.0, feeder_separation=1.5):
     """Place feeder warehouses at density clusters within range of big warehouses"""
     feeder_warehouses = []
     aux_id_counter = 1
@@ -83,22 +82,58 @@ def place_feeder_warehouses_near_clusters(density_clusters, big_warehouses, max_
             for existing_feeder in feeder_warehouses:
                 distance_to_existing = ((cluster_lat - existing_feeder['lat'])**2 + 
                                       (cluster_lon - existing_feeder['lon'])**2)**0.5 * 111
-                if distance_to_existing < 1.5:  # Reduced minimum separation to 1.5km for better coverage
+                if distance_to_existing < feeder_separation:
                     too_close = True
                     break
             
             if not too_close:
-                # Determine feeder warehouse capacity based on local order density
+                # Determine feeder warehouse capacity based on delivery radius and order density
                 order_count = cluster['order_count']
-                if order_count >= 100:  # Reduced thresholds for better coverage
-                    capacity = 200
-                    size_category = "Large"
-                elif order_count >= 50:
-                    capacity = 100
-                    size_category = "Medium"
+                
+                if delivery_radius <= 2:
+                    # Dense network for 2km radius
+                    if order_count >= 80:
+                        capacity = 150
+                        size_category = "Large"
+                    elif order_count >= 40:
+                        capacity = 80
+                        size_category = "Medium"
+                    else:
+                        capacity = 40
+                        size_category = "Small"
+                elif delivery_radius <= 3:
+                    # Balanced network for 3km radius
+                    if order_count >= 100:
+                        capacity = 200
+                        size_category = "Large"
+                    elif order_count >= 60:
+                        capacity = 120
+                        size_category = "Medium"
+                    else:
+                        capacity = 60
+                        size_category = "Small"
+                elif delivery_radius <= 5:
+                    # Wider coverage for 5km radius
+                    if order_count >= 150:
+                        capacity = 300
+                        size_category = "Large"
+                    elif order_count >= 80:
+                        capacity = 180
+                        size_category = "Medium"
+                    else:
+                        capacity = 100
+                        size_category = "Small"
                 else:
-                    capacity = 50
-                    size_category = "Small"
+                    # Very wide coverage for 7km+ radius
+                    if order_count >= 200:
+                        capacity = 400
+                        size_category = "Large"
+                    elif order_count >= 100:
+                        capacity = 250
+                        size_category = "Medium"
+                    else:
+                        capacity = 150
+                        size_category = "Small"
                 
                 feeder_warehouses.append({
                     'id': aux_id_counter,
@@ -110,21 +145,42 @@ def place_feeder_warehouses_near_clusters(density_clusters, big_warehouses, max_
                     'parent': nearest_big_warehouse['id'],
                     'distance_to_parent': min_distance_to_big,
                     'density_score': cluster['density_score'],
-                    'type': 'feeder'
+                    'type': 'feeder',
+                    'delivery_radius': delivery_radius
                 })
                 
                 aux_id_counter += 1
     
     return feeder_warehouses
 
-def create_comprehensive_feeder_network(df_filtered, big_warehouses, min_cluster_size=20, max_distance_from_big=8.0):
-    """Create a comprehensive feeder network ensuring 2km coverage for all orders"""
+def create_comprehensive_feeder_network(df_filtered, big_warehouses, min_cluster_size=20, max_distance_from_big=8.0, delivery_radius=2.0):
+    """Create a comprehensive feeder network ensuring delivery_radius coverage for all orders"""
     
-    # Step 1: Find high-density clusters
-    density_clusters = find_order_density_clusters(df_filtered, min_cluster_size)
-    feeder_warehouses = place_feeder_warehouses_near_clusters(density_clusters, big_warehouses, max_distance_from_big)
+    # Adjust grid size based on delivery radius (smaller radius = finer grid)
+    if delivery_radius <= 2:
+        grid_size = 0.005  # 0.5km grid for 2km radius
+        min_gap_orders = 10
+        feeder_separation = 1.5
+    elif delivery_radius <= 3:
+        grid_size = 0.007  # 0.7km grid for 3km radius
+        min_gap_orders = 15
+        feeder_separation = 2.0
+    elif delivery_radius <= 5:
+        grid_size = 0.01   # 1km grid for 5km radius
+        min_gap_orders = 20
+        feeder_separation = 3.0
+    else:
+        grid_size = 0.015  # 1.5km grid for 7km+ radius
+        min_gap_orders = 25
+        feeder_separation = 4.0
     
-    # Step 2: Find uncovered orders (more than 2km from any feeder)
+    # Step 1: Find high-density clusters with adjusted parameters
+    density_clusters = find_order_density_clusters(df_filtered, min_cluster_size, grid_size)
+    feeder_warehouses = place_feeder_warehouses_near_clusters(
+        density_clusters, big_warehouses, max_distance_from_big, delivery_radius, feeder_separation
+    )
+    
+    # Step 2: Find uncovered orders (more than delivery_radius from any feeder)
     uncovered_orders = []
     for _, order in df_filtered.iterrows():
         order_lat, order_lon = order['order_lat'], order['order_long']
@@ -135,8 +191,8 @@ def create_comprehensive_feeder_network(df_filtered, big_warehouses, min_cluster
             distance = ((order_lat - feeder['lat'])**2 + (order_lon - feeder['lon'])**2)**0.5 * 111
             min_distance_to_feeder = min(min_distance_to_feeder, distance)
         
-        # If more than 2km from nearest feeder, mark as uncovered
-        if min_distance_to_feeder > 2.0:
+        # If more than delivery_radius from nearest feeder, mark as uncovered
+        if min_distance_to_feeder > delivery_radius:
             uncovered_orders.append({
                 'lat': order_lat,
                 'lon': order_lon,
@@ -151,20 +207,21 @@ def create_comprehensive_feeder_network(df_filtered, big_warehouses, min_cluster
         # Group uncovered orders by proximity
         uncovered_df = pd.DataFrame(uncovered_orders)
         
-        # Use smaller grid for uncovered areas
+        # Use grid for uncovered areas
         lat_min, lat_max = uncovered_df['lat'].min(), uncovered_df['lat'].max()
         lon_min, lon_max = uncovered_df['lon'].min(), uncovered_df['lon'].max()
         
-        grid_size = 0.01  # 1km grid for uncovered areas
-        lat_steps = int((lat_max - lat_min) / grid_size) + 1
-        lon_steps = int((lon_max - lon_min) / grid_size) + 1
+        # Adjust grid size for gap-filling based on delivery radius
+        gap_grid_size = grid_size * 1.5
+        lat_steps = int((lat_max - lat_min) / gap_grid_size) + 1
+        lon_steps = int((lon_max - lon_min) / gap_grid_size) + 1
         
         for i in range(lat_steps):
             for j in range(lon_steps):
-                cell_lat_min = lat_min + i * grid_size
-                cell_lat_max = cell_lat_min + grid_size
-                cell_lon_min = lon_min + j * grid_size
-                cell_lon_max = cell_lon_min + grid_size
+                cell_lat_min = lat_min + i * gap_grid_size
+                cell_lat_max = cell_lat_min + gap_grid_size
+                cell_lon_min = lon_min + j * gap_grid_size
+                cell_lon_max = cell_lon_min + gap_grid_size
                 
                 # Count uncovered orders in this cell
                 cell_uncovered = [
@@ -173,7 +230,7 @@ def create_comprehensive_feeder_network(df_filtered, big_warehouses, min_cluster
                        (cell_lon_min <= order['lon'] < cell_lon_max)
                 ]
                 
-                if len(cell_uncovered) >= 10:  # Minimum 10 uncovered orders to justify a feeder
+                if len(cell_uncovered) >= min_gap_orders:
                     # Calculate center of uncovered orders in this cell
                     cell_center_lat = sum([order['lat'] for order in cell_uncovered]) / len(cell_uncovered)
                     cell_center_lon = sum([order['lon'] for order in cell_uncovered]) / len(cell_uncovered)
@@ -196,27 +253,44 @@ def create_comprehensive_feeder_network(df_filtered, big_warehouses, min_cluster
                         for existing_feeder in all_feeders:
                             distance_to_existing = ((cell_center_lat - existing_feeder['lat'])**2 + 
                                                   (cell_center_lon - existing_feeder['lon'])**2)**0.5 * 111
-                            if distance_to_existing < 1.5:  # 1.5km minimum separation
+                            if distance_to_existing < feeder_separation:
                                 too_close = True
                                 break
                         
                         if not too_close:
+                            # Adjust capacity based on delivery radius and order count
+                            if delivery_radius <= 2:
+                                capacity = min(100, max(30, len(cell_uncovered) * 2))
+                            elif delivery_radius <= 3:
+                                capacity = min(150, max(50, len(cell_uncovered) * 2.5))
+                            elif delivery_radius <= 5:
+                                capacity = min(200, max(80, len(cell_uncovered) * 3))
+                            else:
+                                capacity = min(300, max(100, len(cell_uncovered) * 4))
+                            
+                            size_category = "Large" if capacity >= 150 else "Medium" if capacity >= 80 else "Small"
+                            
                             additional_feeders.append({
                                 'id': aux_id_counter,
                                 'lat': cell_center_lat,
                                 'lon': cell_center_lon,
                                 'orders': len(cell_uncovered),
-                                'capacity': 50,  # Start with small capacity for gap-filling feeders
-                                'size_category': "Small",
+                                'capacity': capacity,
+                                'size_category': size_category,
                                 'parent': nearest_big_warehouse['id'],
                                 'distance_to_parent': min_distance_to_big,
-                                'density_score': len(cell_uncovered) / ((grid_size * 111) ** 2),
-                                'type': 'feeder'
+                                'density_score': len(cell_uncovered) / ((gap_grid_size * 111) ** 2),
+                                'type': 'feeder',
+                                'delivery_radius': delivery_radius
                             })
                             aux_id_counter += 1
     
     # Combine all feeders
     all_feeders = feeder_warehouses + additional_feeders
+    
+    # Add delivery radius info to all feeders
+    for feeder in all_feeders:
+        feeder['delivery_radius'] = delivery_radius
     
     return all_feeders, density_clusters
 

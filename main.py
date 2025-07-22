@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 import hashlib
 from io import StringIO
 import math
-import math
 
 # Import helper functions (create these as separate files)
 from data_processing import load_and_process_data, get_date_summary, filter_data_by_date_range, create_map_data
@@ -105,9 +104,26 @@ if csv_file is not None:
     
     # IF Feeder configuration
     st.sidebar.header("🏗️ IF Feeder Configuration")
-    min_cluster_size = st.sidebar.slider("Min orders per cluster", 20, 100, 50, 10, 
+    
+    # Delivery radius selector
+    delivery_radius = st.sidebar.selectbox(
+        "🎯 Target Delivery Radius",
+        options=[2, 3, 5, 7, 10],
+        index=0,
+        help="Maximum distance from feeder warehouse to delivery location"
+    )
+    
+    st.sidebar.write(f"**Selected radius:** {delivery_radius}km")
+    if delivery_radius <= 3:
+        st.sidebar.success("✅ Fast delivery - Urban strategy")
+    elif delivery_radius <= 5:
+        st.sidebar.info("ℹ️ Balanced coverage - Mixed strategy") 
+    else:
+        st.sidebar.warning("⚠️ Wide coverage - Rural strategy")
+    
+    min_cluster_size = st.sidebar.slider("Min orders per cluster", 10, 100, 30, 10, 
                                         help="Minimum orders in an area to place feeder warehouse")
-    max_distance_from_big = st.sidebar.slider("Max distance from hub (km)", 3, 12, 8, 1,
+    max_distance_from_big = st.sidebar.slider("Max distance from hub (km)", 3, 15, 10, 1,
                                              help="Maximum distance feeder can be from hub warehouse")
     
     # Filter data by date range
@@ -265,11 +281,18 @@ if csv_file is not None:
         
         qcommerce_layer.add_to(m)
         
+        # Initialize variables
+        big_warehouses = []
+        feeder_warehouses = []
+        density_clusters = []
+        big_warehouse_count = 0
+        
         # Create warehouse network
         if show_warehouse_recommendations:
             big_warehouses, feeder_warehouses, density_clusters = create_warehouse_network(
-                df_filtered, m, min_cluster_size, max_distance_from_big
+                df_filtered, m, min_cluster_size, max_distance_from_big, delivery_radius
             )
+            big_warehouse_count = len(big_warehouses)
             
             # Add density clusters if requested
             if show_density_clusters:
@@ -278,20 +301,15 @@ if csv_file is not None:
             # Add relay routes if requested
             if show_logistics_routes:
                 create_relay_routes(m, df_filtered, big_warehouses, feeder_warehouses)
-        else:
-            # Initialize empty variables if warehouse recommendations are disabled
-            big_warehouses = []
-            feeder_warehouses = []
-            density_clusters = []
         
         # Add layer control
         folium.LayerControl(collapsed=False).add_to(m)
         
-        # Add legend
-        total_feeders = len(feeder_warehouses) if 'feeder_warehouses' in locals() else 0
-        total_orders_in_2km = sum([feeder['orders_within_2km'] for feeder in feeder_warehouses]) if 'feeder_warehouses' in locals() else 0
-        big_warehouse_count = len(big_warehouses) if 'big_warehouses' in locals() else 0
+        # Calculate total feeder warehouses and their distribution
+        total_feeders = len(feeder_warehouses)
+        total_orders_in_radius = sum([feeder.get('orders_within_radius', 0) for feeder in feeder_warehouses])
         
+        # Add legend
         legend_html = f"""
         <div style="position: fixed; 
                     bottom: 50px; left: 50px; width: 360px; height: 300px; 
@@ -313,7 +331,8 @@ if csv_file is not None:
         🎯 <b>Feeders at high-density clusters</b><br>
         🔗 <b>Smart hub-feeder linkage system</b><br>
         🔄 <b>Inter-hub relay for load balancing</b><br>
-        📊 <b>{total_orders_in_2km:,} orders within 2km of feeders</b>
+        📊 <b>{total_orders_in_radius:,} orders within {delivery_radius}km of feeders</b><br>
+        🎯 <b>Delivery radius: {delivery_radius}km strategy</b>
         </small></p>
         </div>
         """
@@ -340,14 +359,14 @@ if csv_file is not None:
         st.metric("IF Feeder Warehouses", total_feeders)
     
     with col4:
-        coverage_percentage = (total_orders_in_2km / len(df_filtered)) * 100 if len(df_filtered) > 0 else 0
-        st.metric("2km Coverage", f"{coverage_percentage:.1f}%")
+        coverage_percentage = (total_orders_in_radius / len(df_filtered)) * 100 if len(df_filtered) > 0 else 0
+        st.metric(f"{delivery_radius}km Coverage", f"{coverage_percentage:.1f}%")
     
     # Show analytics if warehouses exist
     if show_warehouse_recommendations and len(feeder_warehouses) > 0:
         try:
             from analytics import show_network_analysis
-            show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_warehouse_count, total_feeders, total_orders_in_2km, coverage_percentage)
+            show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_warehouse_count, total_feeders, total_orders_in_radius, coverage_percentage, delivery_radius)
         except Exception as e:
             st.error(f"Error loading analytics: {str(e)}")
             st.write("**Fallback: Basic Cost Analysis**")
@@ -404,7 +423,7 @@ st.sidebar.markdown("""
 - IF Hub warehouses: 1000-1500 sqft, 500 orders/day, ₹35k/month
 - IF Feeder warehouses: 400-600 sqft, 50-200 orders/day, ₹12-18k/month
 - Intelligent placement at order density clusters
-- 2km feeder delivery radius for rapid service
+- Configurable delivery radius for different strategies
 
 **Advanced Relay System:**
 - Inter-hub relays for load balancing
@@ -414,7 +433,7 @@ st.sidebar.markdown("""
 
 **Blowhorn IF Benefits:**
 - Reduced last-mile costs by 30-40%
-- 2km average delivery distance
+- Configurable delivery distance (2km-10km)
 - Scalable hub-feeder model
 - Bangalore traffic-optimized design
 - Smart relay network for peak handling
