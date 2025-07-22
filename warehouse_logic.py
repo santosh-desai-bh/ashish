@@ -311,13 +311,13 @@ def determine_optimal_date_range(daily_summary, max_orders=5000):
     return optimal_days
 
 def calculate_big_warehouse_locations(df_filtered):
-    """Calculate optimal locations for big warehouses (IF Hubs)"""
+    """Calculate optimal locations for big warehouses (IF Hubs) with minimum 4-5 hubs"""
     try:
         total_orders = len(df_filtered)
         
-        # Determine big warehouses (500 daily capacity) based on order volume
-        big_warehouse_count = max(1, total_orders // 500)
-        big_warehouse_count = min(big_warehouse_count, 4)  # Cap at 4 for Bangalore
+        # Ensure minimum 4-5 big warehouses for proper first mile coverage
+        big_warehouse_count = max(5, total_orders // 400)  # Minimum 5 hubs, 400 orders per hub
+        big_warehouse_count = min(big_warehouse_count, 8)  # Cap at 8 for Bangalore
         
         # Use geographic distribution for warehouse placement - prioritize city center areas
         lat_median = df_filtered['order_lat'].median()
@@ -399,27 +399,39 @@ def calculate_big_warehouse_locations(df_filtered):
                     selected_zones.append(best_zone)
                     big_warehouse_centers.append([best_zone['lat'], best_zone['lon']])
         else:
-            # Fallback placement
-            if big_warehouse_count == 1:
-                big_warehouse_centers = [[lat_median, lon_median]]
-            elif big_warehouse_count == 2:
+            # Fallback to geometric distribution for better coverage
+            big_warehouse_centers = []
+            if big_warehouse_count == 5:
+                # Optimized 5-point distribution for Bangalore
                 big_warehouse_centers = [
-                    [lat_median + lat_range/6, lon_median],
-                    [lat_median - lat_range/6, lon_median]
+                    [lat_median, lon_median],  # Center
+                    [lat_median + lat_range/4, lon_median + lon_range/4],  # NE
+                    [lat_median + lat_range/4, lon_median - lon_range/4],  # NW
+                    [lat_median - lat_range/4, lon_median + lon_range/4],  # SE
+                    [lat_median - lat_range/4, lon_median - lon_range/4]   # SW
                 ]
-            elif big_warehouse_count == 3:
+            elif big_warehouse_count == 6:
                 big_warehouse_centers = [
-                    [lat_median + lat_range/6, lon_median],
-                    [lat_median - lat_range/8, lon_median - lon_range/6],
-                    [lat_median - lat_range/8, lon_median + lon_range/6]
+                    [lat_median, lon_median],  # Center
+                    [lat_median + lat_range/3, lon_median],  # North
+                    [lat_median - lat_range/3, lon_median],  # South
+                    [lat_median, lon_median + lon_range/3],  # East
+                    [lat_median, lon_median - lon_range/3],  # West
+                    [lat_median + lat_range/5, lon_median + lon_range/5]   # NE
                 ]
-            else:  # 4 warehouses
-                big_warehouse_centers = [
-                    [lat_median + lat_range/6, lon_median + lon_range/6],
-                    [lat_median + lat_range/6, lon_median - lon_range/6],
-                    [lat_median - lat_range/6, lon_median + lon_range/6],
-                    [lat_median - lat_range/6, lon_median - lon_range/6]
-                ]
+            else:
+                # Default distribution pattern
+                angle_step = 2 * 3.14159 / (big_warehouse_count - 1) if big_warehouse_count > 1 else 0
+                radius_lat = lat_range / 3
+                radius_lon = lon_range / 3
+                
+                big_warehouse_centers = [[lat_median, lon_median]]  # Center hub
+                
+                for i in range(1, big_warehouse_count):
+                    angle = (i - 1) * angle_step
+                    hub_lat = lat_median + radius_lat * np.cos(angle)
+                    hub_lon = lon_median + radius_lon * np.sin(angle)
+                    big_warehouse_centers.append([hub_lat, hub_lon])
         
         return big_warehouse_centers, big_warehouse_count
     

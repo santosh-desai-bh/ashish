@@ -55,6 +55,56 @@ def filter_data_by_date_range(df, start_date, end_date):
     return df[(df['created_date'] >= start_date) & (df['created_date'] <= end_date)]
 
 @st.cache_data
+def create_representative_daily_sample(df_clean, target_orders_per_day=None):
+    """Create a representative daily sample for same-day network analysis"""
+    
+    # Calculate actual daily statistics
+    daily_summary = get_date_summary(df_clean)
+    
+    if target_orders_per_day is None:
+        # Use average daily orders
+        target_orders_per_day = int(daily_summary['Orders'].mean())
+    
+    # Get the distribution patterns from the full dataset
+    total_orders = len(df_clean)
+    total_days = daily_summary['Date'].nunique()
+    
+    # Calculate customer distribution in full dataset
+    customer_dist = df_clean.groupby('customer').size() / total_orders
+    pickup_dist = df_clean.groupby(['customer', 'pickup']).size() / total_orders
+    
+    # Create representative sample maintaining proportions
+    sample_orders = []
+    current_count = 0
+    
+    for customer in customer_dist.index:
+        if current_count >= target_orders_per_day:
+            break
+            
+        # Calculate how many orders this customer should have in daily sample
+        customer_daily_orders = int(customer_dist[customer] * target_orders_per_day)
+        customer_data = df_clean[df_clean['customer'] == customer]
+        
+        if len(customer_data) > 0 and customer_daily_orders > 0:
+            # Sample orders from this customer
+            n_sample = min(customer_daily_orders, len(customer_data))
+            sampled_customer_orders = customer_data.sample(n=n_sample, random_state=42)
+            sample_orders.append(sampled_customer_orders)
+            current_count += n_sample
+    
+    # Combine all samples
+    if sample_orders:
+        representative_sample = pd.concat(sample_orders, ignore_index=True)
+        # Add a synthetic date for display
+        representative_sample['synthetic_date'] = pd.Timestamp('2025-07-22')  # Today for display
+    else:
+        # Fallback to simple random sample
+        representative_sample = df_clean.sample(n=min(target_orders_per_day, len(df_clean)), random_state=42)
+        representative_sample['synthetic_date'] = pd.Timestamp('2025-07-22')
+    
+    return representative_sample, target_orders_per_day
+
+@st.cache_data
 def create_map_data(df_filtered):
     """Cache map data preparation"""
     # Calculate map center
