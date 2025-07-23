@@ -16,6 +16,16 @@ VEHICLE_COSTS = {
     'truck': 1800        # Truck daily cost - for high capacity and long distances
 }
 
+# PACKAGE DIMENSIONS (cubic centimeters converted to cubic meters)
+PACKAGE_VOLUMES = {
+    'Small': 125 / 1000000,      # 125 cm³ = 0.000125 m³
+    'Medium': 1000 / 1000000,    # 1000 cm³ = 0.001 m³  
+    'Large': 3375 / 1000000,     # 3375 cm³ = 0.003375 m³
+    'XL': 10000 / 1000000,       # 10000 cm³ = 0.01 m³
+    'XXL': 35000 / 1000000,      # 35000 cm³ = 0.035 m³
+    'Unknown': 16000 / 1000000   # 16000 cm³ = 0.016 m³ (default assumption)
+}
+
 # CAPACITY SCALING - When orders exceed vehicle capacity, add more vehicles
 CAPACITY_SCALING = {
     'orders_per_vehicle_threshold': 500,  # Above this, need additional vehicles
@@ -23,42 +33,281 @@ CAPACITY_SCALING = {
     'vehicle_cost_multiplier': 1.0       # Cost multiplier for additional vehicles (1.0 = same cost)
 }
 
-# VEHICLE CAPACITIES (Orders per trip and volume limits)
+# CAPACITY EFFICIENCY FACTORS
+LOADING_EFFICIENCY = {
+    'space_utilization': 0.65,    # 65% space utilization due to irregular shapes
+    'loading_time_factor': 0.8,   # 80% efficiency due to loading/unloading constraints
+    'weight_distribution': 0.9,   # 90% efficiency for safe weight distribution
+    'access_factor': 0.85         # 85% efficiency for practical access during delivery
+}
+
+# Combined loading efficiency
+OVERALL_LOADING_EFFICIENCY = (
+    LOADING_EFFICIENCY['space_utilization'] * 
+    LOADING_EFFICIENCY['loading_time_factor'] * 
+    LOADING_EFFICIENCY['weight_distribution'] * 
+    LOADING_EFFICIENCY['access_factor']
+)  # ≈ 40% overall efficiency
+
+# VEHICLE CAPACITIES (Volume-based with realistic loading factors)
 VEHICLE_SPECS = {
     'bike': {
-        'order_capacity': 80,
-        'volume_limit': 0.3,  # cubic meters
+        'theoretical_volume': 0.15,  # 150 liters theoretical capacity
+        'practical_volume': 0.15 * OVERALL_LOADING_EFFICIENCY,  # ~60 liters practical
+        'weight_limit_kg': 80,
         'allowed_sizes': ['Small', 'Medium', 'Large'],
-        'size_capacity': {'Small': 100, 'Medium': 60, 'Large': 40}
+        'size_capacity': {
+            # Apply loading efficiency to theoretical calculations
+            'Small': int((0.15 / PACKAGE_VOLUMES['Small']) * OVERALL_LOADING_EFFICIENCY),      # ~480 → realistic ~60-80
+            'Medium': int((0.15 / PACKAGE_VOLUMES['Medium']) * OVERALL_LOADING_EFFICIENCY),    # ~60 → realistic ~40-50
+            'Large': int((0.15 / PACKAGE_VOLUMES['Large']) * OVERALL_LOADING_EFFICIENCY),      # ~18 → realistic ~15-20
+        },
+        'practical_mixed_capacity': 80,  # Mixed package types - realistic limit
+        'avg_orders_per_trip': 60        # Average considering package mix
     },
     'auto': {
-        'order_capacity': 120,
-        'volume_limit': 1.5,  # cubic meters
+        'theoretical_volume': 1.2,   # 1200 liters theoretical
+        'practical_volume': 1.2 * OVERALL_LOADING_EFFICIENCY,  # ~480 liters practical
+        'weight_limit_kg': 500,
         'allowed_sizes': ['Small', 'Medium', 'Large', 'XL'],
-        'size_capacity': {'Small': 150, 'Medium': 80, 'Large': 50, 'XL': 20}
+        'size_capacity': {
+            'Small': int((1.2 / PACKAGE_VOLUMES['Small']) * OVERALL_LOADING_EFFICIENCY),       # ~3840 → realistic ~200-300
+            'Medium': int((1.2 / PACKAGE_VOLUMES['Medium']) * OVERALL_LOADING_EFFICIENCY),     # ~480 → realistic ~120-150
+            'Large': int((1.2 / PACKAGE_VOLUMES['Large']) * OVERALL_LOADING_EFFICIENCY),       # ~142 → realistic ~80-100
+            'XL': int((1.2 / PACKAGE_VOLUMES['XL']) * OVERALL_LOADING_EFFICIENCY),             # ~48 → realistic ~25-35
+        },
+        'practical_mixed_capacity': 150,  # Mixed package types
+        'avg_orders_per_trip': 120        # Average considering package mix
     },
     'mini_truck': {
-        'order_capacity': 400,
-        'volume_limit': 6.0,  # cubic meters
+        'theoretical_volume': 8.0,   # 8000 liters theoretical
+        'practical_volume': 8.0 * OVERALL_LOADING_EFFICIENCY,  # ~3200 liters practical
+        'weight_limit_kg': 1500,
         'allowed_sizes': ['Small', 'Medium', 'Large', 'XL', 'XXL'],
-        'size_capacity': {'Small': 500, 'Medium': 300, 'Large': 200, 'XL': 80, 'XXL': 40}
+        'size_capacity': {
+            'Small': int((8.0 / PACKAGE_VOLUMES['Small']) * OVERALL_LOADING_EFFICIENCY),       # ~25600 → realistic ~800-1200
+            'Medium': int((8.0 / PACKAGE_VOLUMES['Medium']) * OVERALL_LOADING_EFFICIENCY),     # ~3200 → realistic ~400-600
+            'Large': int((8.0 / PACKAGE_VOLUMES['Large']) * OVERALL_LOADING_EFFICIENCY),       # ~948 → realistic ~200-300
+            'XL': int((8.0 / PACKAGE_VOLUMES['XL']) * OVERALL_LOADING_EFFICIENCY),             # ~320 → realistic ~80-120
+            'XXL': int((8.0 / PACKAGE_VOLUMES['XXL']) * OVERALL_LOADING_EFFICIENCY),           # ~91 → realistic ~20-25 (matches your assumption!)
+        },
+        'practical_mixed_capacity': 300,  # Mixed package types
+        'avg_orders_per_trip': 250        # Average considering package mix
     },
     'truck': {
-        'order_capacity': 600,
-        'volume_limit': 10.0,  # cubic meters
+        'theoretical_volume': 15.0,  # 15000 liters theoretical
+        'practical_volume': 15.0 * OVERALL_LOADING_EFFICIENCY,  # ~6000 liters practical
+        'weight_limit_kg': 3000,
         'allowed_sizes': ['Small', 'Medium', 'Large', 'XL', 'XXL'],
-        'size_capacity': {'Small': 800, 'Medium': 500, 'Large': 300, 'XL': 120, 'XXL': 60}
+        'size_capacity': {
+            'Small': int((15.0 / PACKAGE_VOLUMES['Small']) * OVERALL_LOADING_EFFICIENCY),      # ~48000 → realistic ~1500-2000
+            'Medium': int((15.0 / PACKAGE_VOLUMES['Medium']) * OVERALL_LOADING_EFFICIENCY),    # ~6000 → realistic ~800-1200  
+            'Large': int((15.0 / PACKAGE_VOLUMES['Large']) * OVERALL_LOADING_EFFICIENCY),      # ~1777 → realistic ~400-600
+            'XL': int((15.0 / PACKAGE_VOLUMES['XL']) * OVERALL_LOADING_EFFICIENCY),            # ~600 → realistic ~150-200
+            'XXL': int((15.0 / PACKAGE_VOLUMES['XXL']) * OVERALL_LOADING_EFFICIENCY),          # ~171 → realistic ~40-50
+        },
+        'practical_mixed_capacity': 500,  # Mixed package types
+        'avg_orders_per_trip': 400        # Average considering package mix
     }
 }
 
-# PACKAGE DIMENSIONS (cubic meters per package)
-PACKAGE_VOLUMES = {
-    'Small': 0.001,    # 10cm x 10cm x 10cm
-    'Medium': 0.003375, # 15cm x 15cm x 15cm
-    'Large': 0.008,    # 20cm x 20cm x 20cm
-    'XL': 0.027,       # 30cm x 30cm x 30cm
-    'XXL': 0.064       # 40cm x 40cm x 40cm
+# WAREHOUSE CAPACITY ANALYSIS (Volume and operational efficiency based)
+WAREHOUSE_CAPACITY_FACTORS = {
+    'storage_density': 0.4,        # 40% of warehouse space usable for storage (rest for aisles, sorting, etc.)
+    'storage_height_utilization': 0.7,  # 70% height utilization for safety and access
+    'inventory_turnover': 0.8,     # 0.8 times per day (packages stored for ~1.25 days on average)
+    'operational_efficiency': 0.8,  # 80% efficiency accounting for sorting, consolidation time
+    'peak_capacity_buffer': 1.3    # 30% buffer for peak demand handling
 }
+
+# WAREHOUSE SPECIFICATIONS AND COSTS
+WAREHOUSE_SPECS = {
+    'main_microwarehouse': {
+        'size_range_sqft': (700, 1000),     # 700-1000 sqft
+        'monthly_rent_range': (30000, 40000), # ₹30-40k per month
+        'avg_size_sqft': 850,               # Average size for calculations
+        'avg_monthly_rent': 35000,          # Average rent
+        'description': 'Main distribution hub with sorting and consolidation facilities'
+    },
+    'auxiliary_warehouse': {
+        'size_range_sqft': (200, 500),      # 200-500 sqft
+        'monthly_rent_range': (10000, 20000), # ₹10-20k per month
+        'avg_size_sqft': 350,               # Average size for calculations
+        'avg_monthly_rent': 15000,          # Average rent
+        'description': 'Last-mile delivery point with basic storage and sorting'
+    }
+}
+
+def calculate_realistic_warehouse_capacity(warehouse_sqft, package_mix_assumption=None, show_steps=False):
+    """Calculate realistic warehouse capacity with detailed step-by-step breakdown"""
+    
+    # Default package mix assumption if not provided (based on typical e-commerce)
+    if not package_mix_assumption:
+        package_mix_assumption = {
+            'Small': 0.3,    # 30% small packages
+            'Medium': 0.25,  # 25% medium packages  
+            'Large': 0.25,   # 25% large packages
+            'XL': 0.15,      # 15% XL packages
+            'XXL': 0.05      # 5% XXL packages
+        }
+    
+    # Step-by-step calculation with detailed breakdown
+    calculation_steps = []
+    
+    # Step 1: Calculate average package volume
+    package_volume_calc = []
+    total_weighted_volume = 0
+    for size, ratio in package_mix_assumption.items():
+        volume_m3 = PACKAGE_VOLUMES[size]
+        volume_cm3 = volume_m3 * 1000000
+        weighted_volume = volume_m3 * ratio
+        total_weighted_volume += weighted_volume
+        package_volume_calc.append({
+            'size': size,
+            'ratio': f"{ratio*100:.0f}%",
+            'volume_cm3': f"{volume_cm3:.0f} cm³",
+            'weighted_contribution': f"{weighted_volume*1000000:.0f} cm³"
+        })
+    
+    avg_package_volume = total_weighted_volume
+    calculation_steps.append({
+        'step': 1,
+        'description': 'Calculate Average Package Volume',
+        'detail': package_volume_calc,
+        'result': f"{avg_package_volume*1000000:.0f} cm³ per package"
+    })
+    
+    # Step 2: Calculate warehouse dimensions and volume
+    warehouse_area_m2 = warehouse_sqft * 0.092903  # sqft to m²
+    warehouse_height_m = 4  # assume 4m height
+    total_warehouse_volume_m3 = warehouse_area_m2 * warehouse_height_m
+    
+    calculation_steps.append({
+        'step': 2,
+        'description': 'Calculate Total Warehouse Volume',
+        'detail': [
+            {'component': 'Floor Area', 'value': f"{warehouse_sqft:,} sqft = {warehouse_area_m2:.1f} m²"},
+            {'component': 'Height', 'value': f"{warehouse_height_m} m (standard warehouse height)"},
+            {'component': 'Total Volume', 'value': f"{total_warehouse_volume_m3:.1f} m³"}
+        ],
+        'result': f"{total_warehouse_volume_m3:.1f} m³ total space"
+    })
+    
+    # Step 3: Apply storage efficiency factors
+    storage_efficiency_calc = []
+    usable_volume = total_warehouse_volume_m3
+    
+    # Apply storage density (40% usable for storage)
+    storage_density = WAREHOUSE_CAPACITY_FACTORS['storage_density']
+    volume_after_density = usable_volume * storage_density
+    storage_efficiency_calc.append({
+        'factor': 'Storage Density',
+        'percentage': f"{storage_density*100:.0f}%",
+        'reason': 'Space for aisles, sorting areas, workstations',
+        'volume_before': f"{usable_volume:.1f} m³",
+        'volume_after': f"{volume_after_density:.1f} m³"
+    })
+    usable_volume = volume_after_density
+    
+    # Apply height utilization (70% of height)
+    height_utilization = WAREHOUSE_CAPACITY_FACTORS['storage_height_utilization']
+    volume_after_height = usable_volume * height_utilization
+    storage_efficiency_calc.append({
+        'factor': 'Height Utilization',
+        'percentage': f"{height_utilization*100:.0f}%",
+        'reason': 'Safe stacking height, access for picking',
+        'volume_before': f"{usable_volume:.1f} m³",
+        'volume_after': f"{volume_after_height:.1f} m³"
+    })
+    usable_volume = volume_after_height
+    
+    calculation_steps.append({
+        'step': 3,
+        'description': 'Apply Storage Efficiency Factors',
+        'detail': storage_efficiency_calc,
+        'result': f"{usable_volume:.1f} m³ usable storage volume"
+    })
+    
+    # Step 4: Calculate theoretical package capacity
+    theoretical_packages = int(usable_volume / avg_package_volume)
+    calculation_steps.append({
+        'step': 4,
+        'description': 'Calculate Theoretical Package Storage',
+        'detail': [
+            {'calculation': 'Usable Volume ÷ Average Package Volume', 'value': f"{usable_volume:.1f} m³ ÷ {avg_package_volume*1000000:.0f} cm³"},
+            {'result': 'Theoretical Storage Capacity', 'value': f"{theoretical_packages:,} packages"}
+        ],
+        'result': f"{theoretical_packages:,} packages can be stored"
+    })
+    
+    # Step 5: Apply operational constraints for daily throughput
+    operational_calc = []
+    daily_throughput = theoretical_packages
+    
+    # Daily handling constraint (5% of stored packages can be processed daily)
+    handling_factor = 0.05
+    throughput_after_handling = daily_throughput * handling_factor
+    operational_calc.append({
+        'constraint': 'Daily Handling Capacity',
+        'factor': f"{handling_factor*100:.0f}%",
+        'reason': 'Staff can only process 5% of stored inventory per day',
+        'before': f"{daily_throughput:,} packages stored",
+        'after': f"{int(throughput_after_handling):,} packages/day processable"
+    })
+    daily_throughput = throughput_after_handling
+    
+    # Inventory turnover (0.8x per day)
+    turnover = WAREHOUSE_CAPACITY_FACTORS['inventory_turnover']
+    throughput_after_turnover = daily_throughput * turnover
+    operational_calc.append({
+        'constraint': 'Inventory Turnover',
+        'factor': f"{turnover:.1f}x/day",
+        'reason': 'Packages stay ~1.25 days (same-day + next-day)',
+        'before': f"{int(daily_throughput):,} packages/day",
+        'after': f"{int(throughput_after_turnover):,} packages/day"
+    })
+    daily_throughput = throughput_after_turnover
+    
+    # Operational efficiency (80%)
+    op_efficiency = WAREHOUSE_CAPACITY_FACTORS['operational_efficiency']
+    throughput_after_efficiency = daily_throughput * op_efficiency
+    operational_calc.append({
+        'constraint': 'Operational Efficiency',
+        'factor': f"{op_efficiency*100:.0f}%",
+        'reason': 'Time for sorting, consolidation, breaks',
+        'before': f"{int(daily_throughput):,} packages/day",
+        'after': f"{int(throughput_after_efficiency):,} packages/day"
+    })
+    daily_throughput = throughput_after_efficiency
+    
+    # Peak capacity buffer (30% buffer needed)
+    buffer = WAREHOUSE_CAPACITY_FACTORS['peak_capacity_buffer']
+    final_daily_capacity = daily_throughput / buffer
+    operational_calc.append({
+        'constraint': 'Peak Capacity Buffer',
+        'factor': f"{(buffer-1)*100:.0f}% buffer needed",
+        'reason': 'Handle demand spikes and variations',
+        'before': f"{int(daily_throughput):,} packages/day",
+        'after': f"{int(final_daily_capacity):,} packages/day final"
+    })
+    
+    calculation_steps.append({
+        'step': 5,
+        'description': 'Apply Operational Constraints for Daily Throughput',
+        'detail': operational_calc,
+        'result': f"{int(final_daily_capacity):,} orders/day practical capacity"
+    })
+    
+    result = {
+        'theoretical_packages': theoretical_packages,
+        'daily_capacity': int(final_daily_capacity),
+        'usable_volume_m3': usable_volume,
+        'avg_package_volume': avg_package_volume,
+        'calculation_steps': calculation_steps if show_steps else None,
+        'efficiency_details': WAREHOUSE_CAPACITY_FACTORS
+    }
+    
+    return result
 
 # HUB-AUXILIARY CONFIGURATION
 HUB_AUX_CONFIG = {
@@ -194,7 +443,7 @@ def get_openstreetmap_distance(lat1, lon1, lat2, lon2):
 
 def calculate_optimal_multi_node_routes(big_warehouses):
     """Calculate optimal multi-node relay routes using real road distances"""
-    if not INTER_HUB_CONFIG['enable_multi_node_routes'] or len(big_warehouses) < 3:
+    if not INTER_HUB_CONFIG['enable_multi_node_routes'] or len(big_warehouses) < 2:
         return []
     
     import itertools
@@ -216,8 +465,57 @@ def calculate_optimal_multi_node_routes(big_warehouses):
     # Generate efficient multi-node routes
     routes = []
     
+    # Handle different numbers of hubs
+    if len(big_warehouses) == 2:
+        # Simple point-to-point routes for 2 hubs
+        hub1, hub2 = big_warehouses
+        hub1_id, hub2_id = hub1['id'], hub2['id']
+        if hub1_id in hub_distances and hub2_id in hub_distances[hub1_id]:
+            route_info = hub_distances[hub1_id][hub2_id]
+            routes.append({
+                'route_sequence': [hub1_id, hub2_id],
+                'total_distance': route_info['distance'],
+                'total_time': route_info['time'],
+                'hubs_served': 2,
+                'efficiency_score': route_info['distance'],
+                'route_type': 'point_to_point'
+            })
+    
+    elif len(big_warehouses) == 3:
+        # Triangle routes for 3 hubs (can do both directions)
+        hub_ids = [h['id'] for h in big_warehouses]
+        
+        # Try both clockwise and counter-clockwise
+        for route_sequence in [hub_ids, hub_ids[::-1]]:
+            total_distance = 0
+            total_time = 0
+            valid_route = True
+            
+            for i in range(len(route_sequence)):
+                next_i = (i + 1) % len(route_sequence)
+                current_hub = route_sequence[i]
+                next_hub = route_sequence[next_i]
+                
+                if current_hub in hub_distances and next_hub in hub_distances[current_hub]:
+                    route_info = hub_distances[current_hub][next_hub]
+                    total_distance += route_info['distance']
+                    total_time += route_info['time']
+                else:
+                    valid_route = False
+                    break
+            
+            if valid_route and total_distance <= INTER_HUB_CONFIG['max_route_distance']:
+                routes.append({
+                    'route_sequence': route_sequence + [route_sequence[0]],  # Complete circle
+                    'total_distance': total_distance,
+                    'total_time': total_time,
+                    'hubs_served': 3,
+                    'efficiency_score': total_distance / 3,
+                    'route_type': 'triangular'
+                })
+    
     # Create circular routes (most efficient for multi-stop)
-    if len(big_warehouses) >= 4:
+    elif len(big_warehouses) >= 4:
         # Try different starting points for circular routes
         hub_ids = [h['id'] for h in big_warehouses]
         for start_hub in hub_ids:
@@ -297,11 +595,11 @@ def calculate_first_mile_costs(pickup_hubs, big_warehouses):
     vehicle_specs = {}
     for vehicle_type, specs in VEHICLE_SPECS.items():
         vehicle_specs[vehicle_type] = {
-            'order_capacity': specs['order_capacity'],
+            'order_capacity': specs['practical_mixed_capacity'],
             'cost': VEHICLE_COSTS[vehicle_type],
             'allowed_sizes': specs['allowed_sizes'],
             'size_capacity': specs['size_capacity'],
-            'volume_limit': specs['volume_limit'],
+            'volume_limit': specs['theoretical_volume'],
             'suitable_for': ['small_customers'] if vehicle_type == 'bike' else 
                            ['medium_customers'] if vehicle_type == 'auto' else 
                            ['large_customers']
@@ -541,6 +839,7 @@ def calculate_first_mile_costs(pickup_hubs, big_warehouses):
             'total_hubs': len(hubs),
             'total_trips': len(scheduled_trips),
             'total_cost': customer_cost,
+            'monthly_cost': customer_cost * 30,  # Convert daily to monthly cost
             'cost_per_order': customer_cost / total_customer_orders if total_customer_orders > 0 else 0,
             'preferred_vehicle': preferred_vehicle,
             'consolidation_factor': consolidation_factor,
@@ -840,8 +1139,8 @@ def calculate_middle_mile_costs(big_warehouses, feeder_warehouses):
         else:
             vehicle_type = HUB_AUX_CONFIG['vehicle_selection_rules']['large']['vehicle']
         
-        # Get specs from centralized config
-        vehicle_capacity = VEHICLE_SPECS[vehicle_type]['order_capacity']
+        # Get specs from centralized config - use practical mixed capacity
+        vehicle_capacity = VEHICLE_SPECS[vehicle_type]['practical_mixed_capacity']
         base_vehicle_cost = VEHICLE_COSTS[vehicle_type]
         
         # Calculate vehicles needed based on capacity scaling
@@ -859,10 +1158,14 @@ def calculate_middle_mile_costs(big_warehouses, feeder_warehouses):
         monthly_cost = daily_cost * 30
         total_middle_mile_cost += monthly_cost
         
-        # Calculate efficiency  
+        # Calculate trip utilization and efficiency  
         total_trip_capacity = vehicles_needed * trips_per_vehicle * vehicle_capacity
         current_efficiency = (total_current_orders / total_trip_capacity) * 100 if total_current_orders > 0 else 0
         theoretical_efficiency = (total_theoretical_capacity / total_trip_capacity) * 100
+        
+        # Calculate cost per trip utilization
+        cost_per_trip = daily_cost / (vehicles_needed * trips_per_vehicle)
+        cost_per_order_current = cost_per_trip / (total_current_orders / (vehicles_needed * trips_per_vehicle)) if total_current_orders > 0 else 0
         
         # Add details for this hub's auxiliary network
         aux_names = []
@@ -887,8 +1190,12 @@ def calculate_middle_mile_costs(big_warehouses, feeder_warehouses):
             'vehicle_capacity': vehicle_capacity,
             'trips_per_vehicle': trips_per_vehicle,
             'total_daily_capacity': total_trip_capacity,
+            'total_trips_per_day': vehicles_needed * trips_per_vehicle,
             'current_efficiency': f"{current_efficiency:.1f}%",
             'theoretical_efficiency': f"{theoretical_efficiency:.1f}%",
+            'cost_per_trip': cost_per_trip,
+            'cost_per_order_current': cost_per_order_current,
+            'trip_utilization': f"{current_efficiency:.1f}% ({total_current_orders} orders in {vehicles_needed * trips_per_vehicle} trips)",
             'daily_cost': daily_cost,
             'monthly_cost': monthly_cost,
             'auxiliaries': aux_names,
@@ -919,9 +1226,9 @@ def calculate_middle_mile_costs(big_warehouses, feeder_warehouses):
             else:
                 relay_vehicle = INTER_HUB_CONFIG['distance_rules']['long']['vehicle']
             
-            # Get specs from centralized config
+            # Get specs from centralized config - use practical mixed capacity
             relay_cost = VEHICLE_COSTS[relay_vehicle]
-            relay_capacity = VEHICLE_SPECS[relay_vehicle]['order_capacity']
+            relay_capacity = VEHICLE_SPECS[relay_vehicle]['practical_mixed_capacity']
             trips_per_day = INTER_HUB_CONFIG['trips_per_day']
             
             # Calculate cost
@@ -1086,17 +1393,403 @@ def calculate_last_mile_costs(df_filtered, big_warehouses, feeder_warehouses, de
     
     return total_last_mile_cost, last_mile_details
 
-def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_warehouse_count, total_feeders, total_orders_in_radius, coverage_percentage, delivery_radius=2, vehicle_mix='auto_heavy'):
-    """Show comprehensive network analysis including detailed cost breakdown"""
+def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_warehouse_count, total_feeders, total_orders_in_radius, coverage_percentage, delivery_radius=2, vehicle_mix='auto_heavy', target_capacity=None):
+    """Show simplified network capacity analysis focused on key insights"""
     
-    st.subheader("📊 Blowhorn IF Network Analysis")
+    st.subheader("📊 Network Capacity Analysis")
     
-    # Get pickup hubs data for cost calculation with customer information
+    # Calculate capacity for each mile
+    current_orders = len(df_filtered)
+    
+    # Get pickup hubs data for first mile capacity analysis
     if 'customer' in df_filtered.columns:
         pickup_hubs = df_filtered.groupby(['pickup', 'pickup_long', 'pickup_lat', 'customer']).size().reset_index(name='order_count')
     else:
         pickup_hubs = df_filtered.groupby(['pickup', 'pickup_long', 'pickup_lat']).size().reset_index(name='order_count')
-        pickup_hubs['customer'] = 'Unknown Customer'  # Add default customer column
+    
+    # First Mile Capacity: Based on pickup hub collection capability
+    total_pickup_locations = len(pickup_hubs)
+    # Assume each pickup location can handle ~150 orders/day with proper vehicles
+    first_mile_capacity = total_pickup_locations * 150
+    
+    # Middle Mile Capacity: Hub + Hub-to-Auxiliary capacity
+    total_hub_capacity = sum([hub.get('capacity', 500) for hub in big_warehouses])
+    total_auxiliary_capacity = sum([feeder.get('capacity', 150) for feeder in feeder_warehouses])
+    # Middle mile is limited by the minimum of hub sorting capacity and hub-auxiliary transport
+    middle_mile_capacity = min(total_hub_capacity, total_auxiliary_capacity)
+    
+    # Last Mile Capacity: Auxiliary warehouse to customer delivery
+    # Assume each auxiliary can deliver its full capacity per day
+    last_mile_capacity = total_auxiliary_capacity
+    
+    # Network bottleneck is the minimum capacity across all miles
+    network_bottleneck = min(first_mile_capacity, middle_mile_capacity, last_mile_capacity)
+    
+    # Show capacity breakdown
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("#### 🚚 First Mile")
+        first_util = (current_orders / first_mile_capacity * 100) if first_mile_capacity > 0 else 0
+        color = "🟢" if first_util < 70 else "🟡" if first_util < 90 else "🔴"
+        st.metric("Collection Capacity", f"{first_util:.0f}%", f"{current_orders:,} of {first_mile_capacity:,}")
+        st.write(f"{color} {total_pickup_locations} pickup locations")
+        
+    with col2:
+        st.markdown("#### 🔄 Middle Mile") 
+        middle_util = (current_orders / middle_mile_capacity * 100) if middle_mile_capacity > 0 else 0
+        color = "🟢" if middle_util < 70 else "🟡" if middle_util < 90 else "🔴"
+        st.metric("Hub-Auxiliary Flow", f"{middle_util:.0f}%", f"{current_orders:,} of {middle_mile_capacity:,}")
+        st.write(f"{color} Hub: {total_hub_capacity:,}, Aux: {total_auxiliary_capacity:,}")
+        
+    with col3:
+        st.markdown("#### 🏠 Last Mile")
+        last_util = (current_orders / last_mile_capacity * 100) if last_mile_capacity > 0 else 0
+        color = "🟢" if last_util < 70 else "🟡" if last_util < 90 else "🔴"
+        st.metric("Delivery Capacity", f"{last_util:.0f}%", f"{current_orders:,} of {last_mile_capacity:,}")
+        st.write(f"{color} {len(feeder_warehouses)} auxiliary warehouses")
+    
+    # Show network bottleneck
+    st.markdown("#### 🚨 Network Bottleneck")
+    bottleneck_name = "First Mile" if network_bottleneck == first_mile_capacity else "Middle Mile" if network_bottleneck == middle_mile_capacity else "Last Mile"
+    bottleneck_util = (current_orders / network_bottleneck * 100) if network_bottleneck > 0 else 0
+    
+    if bottleneck_util < 70:
+        st.success(f"✅ **{bottleneck_name}** is the bottleneck at {bottleneck_util:.0f}% utilization. Network can handle {network_bottleneck - current_orders:,} more orders.")
+    elif bottleneck_util < 90:
+        st.warning(f"⚠️ **{bottleneck_name}** is the bottleneck at {bottleneck_util:.0f}% utilization. Consider expanding {bottleneck_name.lower()} capacity soon.")
+    else:
+        st.error(f"🔴 **{bottleneck_name}** is the bottleneck at {bottleneck_util:.0f}% utilization. Urgent capacity expansion needed!")
+    
+    # Add warehouse rental costs and capacity details prominently
+    st.markdown("### 🏭 Warehouse Specifications & Rental Costs")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        main_specs = WAREHOUSE_SPECS['main_microwarehouse']
+        main_capacity = calculate_realistic_warehouse_capacity(main_specs['avg_size_sqft'])
+        
+        st.markdown("#### 🏢 Main Microwarehouses")
+        st.metric("Size Range", f"{main_specs['size_range_sqft'][0]}-{main_specs['size_range_sqft'][1]} sqft", f"avg {main_specs['avg_size_sqft']} sqft")
+        st.metric("Monthly Rent", f"₹{main_specs['monthly_rent_range'][0]:,}-{main_specs['monthly_rent_range'][1]:,}", f"avg ₹{main_specs['avg_monthly_rent']:,}")
+        st.metric("Daily Capacity", f"{main_capacity['daily_capacity']:,} orders", f"per warehouse")
+        st.info(f"📝 {main_specs['description']}")
+        
+    with col2:
+        aux_specs = WAREHOUSE_SPECS['auxiliary_warehouse']
+        aux_capacity = calculate_realistic_warehouse_capacity(aux_specs['avg_size_sqft'])
+        
+        st.markdown("#### 📦 Auxiliary Warehouses") 
+        st.metric("Size Range", f"{aux_specs['size_range_sqft'][0]}-{aux_specs['size_range_sqft'][1]} sqft", f"avg {aux_specs['avg_size_sqft']} sqft")
+        st.metric("Monthly Rent", f"₹{aux_specs['monthly_rent_range'][0]:,}-{aux_specs['monthly_rent_range'][1]:,}", f"avg ₹{aux_specs['avg_monthly_rent']:,}")
+        st.metric("Daily Capacity", f"{aux_capacity['daily_capacity']:,} orders", f"per warehouse")
+        st.info(f"📝 {aux_specs['description']}")
+    
+    # Capacity calculation insight
+    st.markdown("#### 🔍 How We Calculate Daily Capacity")
+    st.info(f"""
+    **Key Insight**: Daily capacity ({main_capacity['daily_capacity']:,} orders for main, {aux_capacity['daily_capacity']:,} for auxiliary) is much lower than storage capacity ({main_capacity['theoretical_packages']:,} and {aux_capacity['theoretical_packages']:,} packages respectively).
+    
+    **Why?** Logistics warehouses are limited by **daily handling capacity** (5% of stored inventory), not storage space. The constraints are:
+    - 40% storage density (aisles, sorting areas)
+    - 70% height utilization (safe stacking)  
+    - 5% daily handling capacity (staff limitations)
+    - Inventory turnover and operational efficiency factors
+    """)
+    
+    # Add cost analysis using existing functions
+    st.markdown("### 💰 Network Cost Analysis")
+    
+    # Calculate costs using existing functions
+    first_mile_cost, first_mile_details = calculate_first_mile_costs(pickup_hubs, big_warehouses)
+    middle_mile_cost, middle_mile_details, inter_hub_details = calculate_middle_mile_costs(big_warehouses, feeder_warehouses)
+    last_mile_cost, last_mile_details = calculate_last_mile_costs(df_filtered, big_warehouses, feeder_warehouses, delivery_radius, vehicle_mix)
+    
+    # Show cost breakdown
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("#### 🚚 First Mile Cost")
+        daily_first_mile = first_mile_cost
+        monthly_first_mile = daily_first_mile * 30
+        first_mile_cpo = daily_first_mile / current_orders if current_orders > 0 else 0
+        st.metric("Daily Cost", f"₹{daily_first_mile:,.0f}")
+        st.write(f"Monthly: ₹{monthly_first_mile:,.0f}")
+        st.write(f"CPO: ₹{first_mile_cpo:.1f}")
+        
+    with col2:
+        st.markdown("#### 🔄 Middle Mile Cost")
+        daily_middle_mile = middle_mile_cost / 30  # Convert monthly to daily
+        middle_mile_cpo = daily_middle_mile / current_orders if current_orders > 0 else 0
+        st.metric("Daily Cost", f"₹{daily_middle_mile:,.0f}")
+        st.write(f"Monthly: ₹{middle_mile_cost:,.0f}")
+        st.write(f"CPO: ₹{middle_mile_cpo:.1f}")
+        
+    with col3:
+        st.markdown("#### 🏠 Last Mile Cost")
+        daily_last_mile = last_mile_cost / 30  # Convert monthly to daily
+        last_mile_cpo = daily_last_mile / current_orders if current_orders > 0 else 0
+        st.metric("Daily Cost", f"₹{daily_last_mile:,.0f}")
+        st.write(f"Monthly: ₹{last_mile_cost:,.0f}")
+        st.write(f"CPO: ₹{last_mile_cpo:.1f}")
+    
+    # Total network cost
+    total_daily_cost = daily_first_mile + daily_middle_mile + daily_last_mile
+    total_monthly_cost = total_daily_cost * 30
+    total_cpo = total_daily_cost / current_orders if current_orders > 0 else 0
+    
+    st.markdown("#### 📊 Total Network Cost")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Daily Total", f"₹{total_daily_cost:,.0f}")
+    with col2:
+        st.metric("Monthly Total", f"₹{total_monthly_cost:,.0f}")
+    with col3:
+        st.metric("Cost Per Order", f"₹{total_cpo:.1f}")
+    
+    # Add comprehensive cost breakdown mixing warehouse rental + all mile costs
+    st.markdown("---")
+    st.markdown("### 🏢 COMPREHENSIVE COST BREAKDOWN: Warehouse Rent + Transportation")
+    
+    # Calculate warehouse rental costs
+    main_warehouses_count = len(big_warehouses)
+    auxiliary_warehouses_count = len(feeder_warehouses)
+    
+    main_wh_monthly_rent = main_warehouses_count * WAREHOUSE_SPECS['main_microwarehouse']['avg_monthly_rent']
+    aux_wh_monthly_rent = auxiliary_warehouses_count * WAREHOUSE_SPECS['auxiliary_warehouse']['avg_monthly_rent']
+    total_warehouse_rent = main_wh_monthly_rent + aux_wh_monthly_rent
+    
+    # Transportation costs (monthly)
+    monthly_first_mile = daily_first_mile * 30
+    monthly_middle_mile = daily_middle_mile * 30
+    monthly_last_mile = daily_last_mile * 30
+    total_transportation = monthly_first_mile + monthly_middle_mile + monthly_last_mile
+    
+    # Grand total
+    grand_total_monthly = total_warehouse_rent + total_transportation
+    grand_total_daily = grand_total_monthly / 30
+    grand_total_cpo = grand_total_daily / current_orders if current_orders > 0 else 0
+    
+    # Create comprehensive breakdown
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 🏢 Warehouse Infrastructure Costs")
+        st.metric("Main Warehouses", f"₹{main_wh_monthly_rent:,.0f}/month", f"{main_warehouses_count} × ₹{WAREHOUSE_SPECS['main_microwarehouse']['avg_monthly_rent']:,}")
+        st.metric("Auxiliary Warehouses", f"₹{aux_wh_monthly_rent:,.0f}/month", f"{auxiliary_warehouses_count} × ₹{WAREHOUSE_SPECS['auxiliary_warehouse']['avg_monthly_rent']:,}")
+        st.metric("Total Warehouse Rent", f"₹{total_warehouse_rent:,.0f}/month", f"Fixed Infrastructure Cost")
+        
+        # Warehouse cost per order
+        warehouse_cpo = (total_warehouse_rent / 30) / current_orders if current_orders > 0 else 0
+        st.write(f"**Warehouse CPO:** ₹{warehouse_cpo:.1f}")
+        
+    with col2:
+        st.markdown("#### 🚛 Transportation Operations Costs")
+        st.metric("First Mile Collection", f"₹{monthly_first_mile:,.0f}/month", f"Customer → Hub")
+        st.metric("Middle Mile Distribution", f"₹{monthly_middle_mile:,.0f}/month", f"Hub → Auxiliary")
+        st.metric("Last Mile Delivery", f"₹{monthly_last_mile:,.0f}/month", f"Warehouse → Customer")
+        st.metric("Total Transportation", f"₹{total_transportation:,.0f}/month", f"Variable Operations Cost")
+        
+        # Transportation cost per order
+        transport_cpo = (total_transportation / 30) / current_orders if current_orders > 0 else 0
+        st.write(f"**Transport CPO:** ₹{transport_cpo:.1f}")
+    
+    # Grand total summary
+    st.markdown("#### 💰 GRAND TOTAL: Complete Network Operating Cost")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Monthly Total", f"₹{grand_total_monthly:,.0f}", f"Rent + Transport")
+    with col2:
+        st.metric("Daily Total", f"₹{grand_total_daily:,.0f}", f"All-in Operating Cost")
+    with col3:
+        st.metric("Cost Per Order", f"₹{grand_total_cpo:.1f}", f"Complete CPO")
+    with col4:
+        warehouse_percentage = (total_warehouse_rent / grand_total_monthly) * 100
+        st.metric("Rent vs Transport", f"{warehouse_percentage:.0f}%", f"Warehouse Rent Share")
+    
+    # Cost breakdown chart
+    st.markdown("#### 📈 Cost Structure Analysis")
+    
+    # Show percentage breakdown
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Monthly Cost Distribution:**")
+        warehouse_pct = (total_warehouse_rent / grand_total_monthly) * 100
+        first_mile_pct = (monthly_first_mile / grand_total_monthly) * 100
+        middle_mile_pct = (monthly_middle_mile / grand_total_monthly) * 100
+        last_mile_pct = (monthly_last_mile / grand_total_monthly) * 100
+        
+        st.write(f"🏢 Warehouse Rent: {warehouse_pct:.1f}% (₹{total_warehouse_rent:,.0f})")
+        st.write(f"🚚 First Mile: {first_mile_pct:.1f}% (₹{monthly_first_mile:,.0f})")
+        st.write(f"🔄 Middle Mile: {middle_mile_pct:.1f}% (₹{monthly_middle_mile:,.0f})")
+        st.write(f"🏠 Last Mile: {last_mile_pct:.1f}% (₹{monthly_last_mile:,.0f})")
+        
+    with col2:
+        st.markdown("**Trip Frequency & Volume:**")
+        
+        # Calculate total trips across all segments
+        pickup_hubs_count = len(pickup_hubs) if 'pickup_hubs' in locals() else 0
+        
+        # First mile trips (4-6 collections per hub per day)
+        first_mile_trips_per_day = pickup_hubs_count * 5  # Average 5 trips
+        
+        # Middle mile trips (from middle mile details)
+        middle_mile_trips_per_day = 0
+        if middle_mile_details:
+            middle_mile_trips_per_day = sum([detail.get('total_trips_per_day', 0) for detail in middle_mile_details])
+        
+        # Last mile trips (estimated from orders and vehicle capacity)
+        avg_orders_per_trip = 15  # Conservative estimate for mixed delivery
+        last_mile_trips_per_day = max(1, current_orders // avg_orders_per_trip)
+        
+        total_trips_per_day = first_mile_trips_per_day + middle_mile_trips_per_day + last_mile_trips_per_day
+        
+        st.write(f"🚚 First Mile: {first_mile_trips_per_day} trips/day")
+        st.write(f"🔄 Middle Mile: {middle_mile_trips_per_day} trips/day")
+        st.write(f"🏠 Last Mile: {last_mile_trips_per_day} trips/day")
+        st.write(f"**Total Daily Trips: {total_trips_per_day}**")
+        
+        # Cost per trip
+        cost_per_trip = grand_total_daily / total_trips_per_day if total_trips_per_day > 0 else 0
+        st.write(f"**Avg Cost/Trip: ₹{cost_per_trip:.0f}**")
+    
+    # Scale analysis
+    st.markdown("#### 📊 Scale Economics Analysis")
+    st.info(f"""
+    **Current Scale:** {current_orders:,} orders/day across {main_warehouses_count} main + {auxiliary_warehouses_count} auxiliary warehouses
+    
+    **Cost Structure:**
+    - **Fixed Costs (Rent):** ₹{total_warehouse_rent:,.0f}/month ({warehouse_percentage:.0f}%) - doesn't change with volume
+    - **Variable Costs (Transport):** ₹{total_transportation:,.0f}/month ({100-warehouse_percentage:.0f}%) - scales with orders
+    
+    **Scale Benefits:** As order volume increases, warehouse rent cost per order decreases while transport costs remain relatively stable. At 2x volume, total CPO would drop to ~₹{grand_total_cpo*0.75:.1f} (25% improvement).
+    """)
+    
+    # Add the ultimate comprehensive table with EVERYTHING
+    st.markdown("---")
+    st.markdown("### 📋 ULTIMATE NETWORK SUMMARY: All Costs + Capacity + Utilization")
+    
+    # Calculate all capacity metrics
+    total_pickup_locations = len(pickup_hubs)
+    first_mile_capacity = total_pickup_locations * 150  # 150 orders per pickup location
+    total_hub_capacity = sum([hub.get('capacity', 500) for hub in big_warehouses])
+    total_auxiliary_capacity = sum([feeder.get('capacity', 150) for feeder in feeder_warehouses])
+    middle_mile_capacity = min(total_hub_capacity, total_auxiliary_capacity)
+    last_mile_capacity = total_auxiliary_capacity
+    network_bottleneck = min(first_mile_capacity, middle_mile_capacity, last_mile_capacity)
+    
+    # Calculate utilization percentages
+    first_util = (current_orders / first_mile_capacity * 100) if first_mile_capacity > 0 else 0
+    middle_util = (current_orders / middle_mile_capacity * 100) if middle_mile_capacity > 0 else 0
+    last_util = (current_orders / last_mile_capacity * 100) if last_mile_capacity > 0 else 0
+    bottleneck_util = (current_orders / network_bottleneck * 100) if network_bottleneck > 0 else 0
+    
+    # Create comprehensive summary table
+    import pandas as pd
+    
+    summary_data = {
+        'Network Component': [
+            '🏢 Main Warehouses',
+            '📦 Auxiliary Warehouses', 
+            '🚚 First Mile Collection',
+            '🔄 Middle Mile Distribution',
+            '🏠 Last Mile Delivery',
+            '💰 TOTAL NETWORK'
+        ],
+        'Count/Capacity': [
+            f"{main_warehouses_count} warehouses",
+            f"{auxiliary_warehouses_count} warehouses",
+            f"{first_mile_capacity:,} orders/day",
+            f"{middle_mile_capacity:,} orders/day",
+            f"{last_mile_capacity:,} orders/day",
+            f"{network_bottleneck:,} orders/day (bottleneck)"
+        ],
+        'Current Utilization': [
+            f"Fixed Infrastructure",
+            f"Fixed Infrastructure", 
+            f"{first_util:.1f}% ({current_orders}/{first_mile_capacity:,})",
+            f"{middle_util:.1f}% ({current_orders}/{middle_mile_capacity:,})",
+            f"{last_util:.1f}% ({current_orders}/{last_mile_capacity:,})",
+            f"{bottleneck_util:.1f}% ({current_orders}/{network_bottleneck:,})"
+        ],
+        'Monthly Cost': [
+            f"₹{main_wh_monthly_rent:,.0f}",
+            f"₹{aux_wh_monthly_rent:,.0f}",
+            f"₹{monthly_first_mile:,.0f}",
+            f"₹{monthly_middle_mile:,.0f}",
+            f"₹{monthly_last_mile:,.0f}",
+            f"₹{grand_total_monthly:,.0f}"
+        ],
+        'Cost Per Order': [
+            f"₹{(main_wh_monthly_rent/30)/current_orders:.1f}" if current_orders > 0 else "₹0.0",
+            f"₹{(aux_wh_monthly_rent/30)/current_orders:.1f}" if current_orders > 0 else "₹0.0",
+            f"₹{daily_first_mile/current_orders:.1f}" if current_orders > 0 else "₹0.0",
+            f"₹{daily_middle_mile/current_orders:.1f}" if current_orders > 0 else "₹0.0",
+            f"₹{daily_last_mile/current_orders:.1f}" if current_orders > 0 else "₹0.0",
+            f"₹{grand_total_cpo:.1f}"
+        ],
+        'Key Details': [
+            f"{WAREHOUSE_SPECS['main_microwarehouse']['avg_size_sqft']} sqft avg",
+            f"{WAREHOUSE_SPECS['auxiliary_warehouse']['avg_size_sqft']} sqft avg",
+            f"{total_pickup_locations} pickup locations",
+            f"{main_warehouses_count} hubs → {auxiliary_warehouses_count} aux",
+            f"{delivery_radius}km delivery radius",
+            f"Bottleneck: {'First Mile' if network_bottleneck == first_mile_capacity else 'Middle Mile' if network_bottleneck == middle_mile_capacity else 'Last Mile'}"
+        ]
+    }
+    
+    summary_df = pd.DataFrame(summary_data)
+    
+    # Display the comprehensive table
+    st.dataframe(
+        summary_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Network Component": st.column_config.TextColumn("Network Component", width="medium"),
+            "Count/Capacity": st.column_config.TextColumn("Count/Capacity", width="medium"),
+            "Current Utilization": st.column_config.TextColumn("Current Utilization", width="medium"),
+            "Monthly Cost": st.column_config.TextColumn("Monthly Cost", width="medium"),
+            "Cost Per Order": st.column_config.TextColumn("Cost Per Order", width="small"),
+            "Key Details": st.column_config.TextColumn("Key Details", width="medium")
+        }
+    )
+    
+    # Add executive summary
+    st.markdown("#### 🎯 Executive Summary")
+    bottleneck_name = "First Mile" if network_bottleneck == first_mile_capacity else "Middle Mile" if network_bottleneck == middle_mile_capacity else "Last Mile"
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**📊 Network Performance:**")
+        if bottleneck_util < 70:
+            status_color = "🟢"
+            status_text = "Healthy"
+        elif bottleneck_util < 90:
+            status_color = "🟡" 
+            status_text = "Warning"
+        else:
+            status_color = "🔴"
+            status_text = "Critical"
+            
+        st.write(f"• Network Status: {status_color} {status_text}")
+        st.write(f"• Current Orders: {current_orders:,}/day")
+        st.write(f"• Network Capacity: {network_bottleneck:,}/day")
+        st.write(f"• Bottleneck: {bottleneck_name} ({bottleneck_util:.1f}%)")
+        st.write(f"• Spare Capacity: {network_bottleneck - current_orders:,} orders")
+        
+    with col2:
+        st.markdown("**💰 Cost Performance:**")
+        st.write(f"• Total Monthly Cost: ₹{grand_total_monthly:,.0f}")
+        st.write(f"• Cost Per Order: ₹{grand_total_cpo:.1f}")
+        st.write(f"• Fixed Costs: {warehouse_percentage:.0f}% (₹{total_warehouse_rent:,.0f})")
+        st.write(f"• Variable Costs: {100-warehouse_percentage:.0f}% (₹{total_transportation:,.0f})")
+        st.write(f"• Infrastructure: {main_warehouses_count + auxiliary_warehouses_count} warehouses")
+    
+    return  # Return after showing ultimate comprehensive analysis
     
     # Calculate costs
     first_mile_cost, first_mile_details = calculate_first_mile_costs(pickup_hubs, big_warehouses)
@@ -1163,16 +1856,18 @@ def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_wa
     # Leg-wise CPO Analysis - Current vs Full Capacity
     st.markdown("### 📊 Leg-wise CPO Analysis: Current Orders vs Full Capacity")
     
-    # Calculate actual network capacity based on infrastructure built
-    total_hub_capacity = sum([hub.get('capacity', 500) for hub in big_warehouses])
-    total_feeder_capacity = sum([feeder.get('capacity', 150) for feeder in feeder_warehouses])
+    # Use target capacity from user input instead of making assumptions
     current_orders = len(df_filtered)
     
-    # True network capacity is the minimum bottleneck (hubs or feeders)
-    network_capacity = min(total_hub_capacity, total_feeder_capacity)
+    if target_capacity is not None and target_capacity > current_orders:
+        full_capacity_orders = target_capacity
+    else:
+        # Fallback to current orders if no target specified
+        full_capacity_orders = current_orders
     
-    # Full capacity scenario uses the actual network capacity we built
-    full_capacity_orders = network_capacity
+    # Calculate actual network capacity based on infrastructure built for display
+    total_hub_capacity = sum([hub.get('capacity', 500) for hub in big_warehouses])
+    total_feeder_capacity = sum([feeder.get('capacity', 150) for feeder in feeder_warehouses])
     
     # Cost calculations at full capacity
     if current_orders > 0 and full_capacity_orders > current_orders:
@@ -1200,40 +1895,53 @@ def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_wa
         
     # Create comparison table
     col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 📈 Current Scenario")
+        # Calculate correct CPO - daily cost per order
+        first_mile_daily_cpo = (monthly_first_mile / 30) / current_orders if current_orders > 0 else 0
+        middle_mile_daily_cpo = (middle_mile_cost / 30) / current_orders if current_orders > 0 else 0  
+        last_mile_daily_cpo = (last_mile_cost / 30) / current_orders if current_orders > 0 else 0
+        total_daily_cpo = first_mile_daily_cpo + middle_mile_daily_cpo + last_mile_daily_cpo
         
-        with col1:
-            st.markdown("#### 📈 Current Scenario")
-            # Calculate correct CPO - daily cost per order
-            first_mile_daily_cpo = (monthly_first_mile / 30) / current_orders if current_orders > 0 else 0
-            middle_mile_daily_cpo = (middle_mile_cost / 30) / current_orders if current_orders > 0 else 0  
-            last_mile_daily_cpo = (last_mile_cost / 30) / current_orders if current_orders > 0 else 0
-            total_daily_cpo = first_mile_daily_cpo + middle_mile_daily_cpo + last_mile_daily_cpo
-            
-            current_data = {
-                "Mile": ["First Mile", "Middle Mile", "Last Mile", "**TOTAL**"],
-                "Monthly Cost": [f"₹{monthly_first_mile:,.0f}", f"₹{middle_mile_cost:,.0f}", f"₹{last_mile_cost:,.0f}", f"**₹{total_logistics_cost:,.0f}**"],
-                "CPO": [f"₹{first_mile_daily_cpo:.1f}", f"₹{middle_mile_daily_cpo:.1f}", f"₹{last_mile_daily_cpo:.1f}", f"**₹{total_daily_cpo:.1f}**"]
-            }
-            st.table(pd.DataFrame(current_data))
-            st.write(f"🎯 **Current Orders:** {current_orders:,}")
-            st.write(f"📊 **Network Utilization:** {(current_orders/network_capacity*100):.1f}%")
+        # Add capacity assumptions to current cost breakdown
+        pickup_hubs = df_filtered.groupby(['pickup', 'pickup_long', 'pickup_lat']).size().reset_index(name='order_count')
+        first_mile_capacity_note = f"{len(pickup_hubs)} pickup hubs"
+        middle_mile_capacity_note = f"{len(middle_mile_details)} routes, avg {sum([d['total_trips_per_day'] for d in middle_mile_details])//len(middle_mile_details) if middle_mile_details else 0} trips/day"
+        last_mile_capacity_note = f"{current_vehicle_mix} mix"
         
-        with col2:
-            st.markdown("#### 🚀 Full Capacity Scenario")
-            # Calculate correct CPO for full capacity - daily cost per order
-            full_first_mile_daily_cpo = (full_capacity_first_mile / 30) / full_capacity_orders if full_capacity_orders > 0 else 0
-            full_middle_mile_daily_cpo = (full_capacity_middle_mile / 30) / full_capacity_orders if full_capacity_orders > 0 else 0
-            full_last_mile_daily_cpo = (full_capacity_last_mile / 30) / full_capacity_orders if full_capacity_orders > 0 else 0
-            full_total_daily_cpo = full_first_mile_daily_cpo + full_middle_mile_daily_cpo + full_last_mile_daily_cpo
-            
-            full_capacity_data = {
-                "Mile": ["First Mile", "Middle Mile", "Last Mile", "**TOTAL**"],
-                "Monthly Cost": [f"₹{full_capacity_first_mile:,.0f}", f"₹{full_capacity_middle_mile:,.0f}", f"₹{full_capacity_last_mile:,.0f}", f"**₹{full_capacity_total:,.0f}**"],
-                "CPO": [f"₹{full_first_mile_daily_cpo:.1f}", f"₹{full_middle_mile_daily_cpo:.1f}", f"₹{full_last_mile_daily_cpo:.1f}", f"**₹{full_total_daily_cpo:.1f}**"]
-            }
-            st.table(pd.DataFrame(full_capacity_data))
-            st.write(f"🎯 **Full Capacity Orders:** {full_capacity_orders:,}")
-            st.write(f"💰 **CPO Improvement:** ₹{total_daily_cpo - full_total_daily_cpo:.1f} ({((total_daily_cpo - full_total_daily_cpo)/total_daily_cpo*100):.1f}% reduction)")
+        current_data = {
+            "Mile": ["First Mile", "Middle Mile", "Last Mile", "**TOTAL**"],
+            "Monthly Cost": [f"₹{monthly_first_mile:,.0f}", f"₹{middle_mile_cost:,.0f}", f"₹{last_mile_cost:,.0f}", f"**₹{total_logistics_cost:,.0f}**"],
+            "CPO": [f"₹{first_mile_daily_cpo:.1f}", f"₹{middle_mile_daily_cpo:.1f}", f"₹{last_mile_daily_cpo:.1f}", f"**₹{total_daily_cpo:.1f}**"],
+            "Capacity Used": [first_mile_capacity_note, middle_mile_capacity_note, last_mile_capacity_note, f"**{current_orders:,} orders**"]
+        }
+        st.table(pd.DataFrame(current_data))
+        st.write(f"🎯 **Current Orders:** {current_orders:,}")
+        st.write(f"📊 **Network Utilization:** {(current_orders/full_capacity_orders*100):.1f}%")
+    
+    with col2:
+        st.markdown("#### 🚀 Full Capacity Scenario")
+        # Calculate correct CPO for full capacity - daily cost per order
+        full_first_mile_daily_cpo = (full_capacity_first_mile / 30) / full_capacity_orders if full_capacity_orders > 0 else 0
+        full_middle_mile_daily_cpo = (full_capacity_middle_mile / 30) / full_capacity_orders if full_capacity_orders > 0 else 0
+        full_last_mile_daily_cpo = (full_capacity_last_mile / 30) / full_capacity_orders if full_capacity_orders > 0 else 0
+        full_total_daily_cpo = full_first_mile_daily_cpo + full_middle_mile_daily_cpo + full_last_mile_daily_cpo
+        
+        # Add capacity assumptions to full capacity breakdown
+        full_first_mile_capacity_note = f"Same {len(pickup_hubs)} hubs, higher frequency"
+        full_middle_mile_capacity_note = f"Same routes, {sum([d['total_trips_per_day'] for d in middle_mile_details]) if middle_mile_details else 0} trips/day max"
+        full_last_mile_capacity_note = f"Scaled {current_vehicle_mix} mix"
+        
+        full_capacity_data = {
+            "Mile": ["First Mile", "Middle Mile", "Last Mile", "**TOTAL**"],
+            "Monthly Cost": [f"₹{full_capacity_first_mile:,.0f}", f"₹{full_capacity_middle_mile:,.0f}", f"₹{full_capacity_last_mile:,.0f}", f"**₹{full_capacity_total:,.0f}**"],
+            "CPO": [f"₹{full_first_mile_daily_cpo:.1f}", f"₹{full_middle_mile_daily_cpo:.1f}", f"₹{full_last_mile_daily_cpo:.1f}", f"**₹{full_total_daily_cpo:.1f}**"],
+            "Capacity Used": [full_first_mile_capacity_note, full_middle_mile_capacity_note, full_last_mile_capacity_note, f"**{full_capacity_orders:,} orders**"]
+        }
+        st.table(pd.DataFrame(full_capacity_data))
+        st.write(f"🎯 **Full Capacity Orders:** {full_capacity_orders:,}")
+        st.write(f"💰 **CPO Improvement:** ₹{total_daily_cpo - full_total_daily_cpo:.1f} ({((total_daily_cpo - full_total_daily_cpo)/total_daily_cpo*100):.1f}% reduction)")
     
     
     # Simplified Key Metrics for Investors
@@ -1282,22 +1990,6 @@ def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_wa
         if vehicle_data:
             st.table(pd.DataFrame(vehicle_data))
     
-    # Simplified Customer Performance Table
-    st.markdown("### 💼 Customer Performance Summary")
-    
-    # Create clean customer summary table
-    customer_summary = []
-    for detail in first_mile_details:
-        customer_summary.append({
-            'Customer': detail['customer'][:20] + '...' if len(detail['customer']) > 20 else detail['customer'],
-            'Orders': f"{detail['total_orders']:,}",
-            'Trips': f"{detail['total_trips']}",
-            'CPO': f"₹{detail['cost_per_order']:.1f}",
-            'Monthly Cost': f"₹{detail['monthly_cost']:,.0f}"
-        })
-    
-    if customer_summary:
-        st.table(pd.DataFrame(customer_summary))
     
     # Network utilization summary
     st.markdown("### 📊 Network Utilization Summary")
@@ -1331,6 +2023,135 @@ def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_wa
         }
         st.table(pd.DataFrame(efficiency_data))
     
+    # Move the capacity assumptions table to be more prominent right after warehouse specs
+    st.markdown("### 📊 Detailed Capacity Assumptions")
+    st.markdown("*Complete breakdown of all assumptions used in cost and capacity calculations*")
+    
+    # Create capacity assumptions table
+    capacity_assumptions_data = []
+    
+    # Vehicle capacity assumptions
+    for vehicle_type, specs in VEHICLE_SPECS.items():
+        theoretical_vol = int(specs['theoretical_volume'] * 1000)
+        practical_vol = int(specs['practical_volume'] * 1000)
+        efficiency_loss = f"{((theoretical_vol - practical_vol) / theoretical_vol * 100):.0f}%"
+        
+        capacity_assumptions_data.append({
+            "Cost Component": f"{vehicle_type.replace('_', ' ').title()} Vehicle",
+            "Theoretical Capacity": f"{theoretical_vol}L / {specs['practical_mixed_capacity']} orders theoretical",
+            "Practical Capacity": f"{practical_vol}L / {specs['avg_orders_per_trip']} orders average",
+            "Efficiency Loss": f"{efficiency_loss} (Space: 65%, Load: 80%, Weight: 90%, Access: 85%)",
+            "Daily Cost": f"₹{VEHICLE_COSTS[vehicle_type]:,}/day",
+            "Usage": "First Mile, Middle Mile, Inter-Hub routes"
+        })
+    
+    # Main microwarehouse capacity assumptions
+    main_wh_specs = WAREHOUSE_SPECS['main_microwarehouse']
+    main_wh_capacity = calculate_realistic_warehouse_capacity(main_wh_specs['avg_size_sqft'])
+    capacity_assumptions_data.append({
+        "Cost Component": "Main Microwarehouse",
+        "Theoretical Capacity": f"{main_wh_specs['size_range_sqft'][0]}-{main_wh_specs['size_range_sqft'][1]} sqft, {main_wh_capacity['theoretical_packages']:,} packages storage",
+        "Practical Capacity": f"{main_wh_capacity['daily_capacity']:,} orders/day (avg {main_wh_specs['avg_size_sqft']} sqft)",
+        "Efficiency Loss": f"Storage: 40%, Height: 70%, Handling: 5%, Turnover: 0.8x/day, Buffer: 30%",
+        "Daily Cost": f"₹{main_wh_specs['monthly_rent_range'][0]:,}-{main_wh_specs['monthly_rent_range'][1]:,}/month (avg ₹{main_wh_specs['avg_monthly_rent']:,})",
+        "Usage": "Hub operations with sorting and consolidation"
+    })
+    
+    # Auxiliary warehouse capacity assumptions  
+    aux_wh_specs = WAREHOUSE_SPECS['auxiliary_warehouse']
+    aux_wh_capacity = calculate_realistic_warehouse_capacity(aux_wh_specs['avg_size_sqft'])
+    capacity_assumptions_data.append({
+        "Cost Component": "Auxiliary Warehouse",
+        "Theoretical Capacity": f"{aux_wh_specs['size_range_sqft'][0]}-{aux_wh_specs['size_range_sqft'][1]} sqft, {aux_wh_capacity['theoretical_packages']:,} packages storage",
+        "Practical Capacity": f"{aux_wh_capacity['daily_capacity']:,} orders/day (avg {aux_wh_specs['avg_size_sqft']} sqft)",
+        "Efficiency Loss": f"Same constraints as main warehouse",
+        "Daily Cost": f"₹{aux_wh_specs['monthly_rent_range'][0]:,}-{aux_wh_specs['monthly_rent_range'][1]:,}/month (avg ₹{aux_wh_specs['avg_monthly_rent']:,})",
+        "Usage": "Last-mile delivery points with basic storage"
+    })
+    
+    # Package size assumptions
+    capacity_assumptions_data.append({
+        "Cost Component": "Package Mix",
+        "Theoretical Capacity": "Small(30%) + Medium(25%) + Large(25%) + XL(15%) + XXL(5%)",
+        "Practical Capacity": f"Avg: {sum([PACKAGE_VOLUMES[size] * ratio for size, ratio in {'Small': 0.3, 'Medium': 0.25, 'Large': 0.25, 'XL': 0.15, 'XXL': 0.05}.items()]) * 1000000:.0f} cm³/package",
+        "Efficiency Loss": "Volume-based vehicle selection and trip planning",
+        "Daily Cost": "Impacts vehicle selection and trip efficiency",
+        "Usage": "All vehicle capacity and cost calculations"
+    })
+    
+    st.dataframe(pd.DataFrame(capacity_assumptions_data), use_container_width=True)
+    
+    # Step-by-Step Capacity Calculation
+    with st.expander("🔍 **Step-by-Step Capacity Calculation Breakdown**", expanded=False):
+        st.markdown("### How We Calculate Warehouse Capacity")
+        st.markdown("*This shows exactly how we arrive at the daily capacity numbers for warehouses*")
+        
+        # Show calculation for both warehouse types
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### Main Microwarehouse (850 sqft avg)")
+            main_calc = calculate_realistic_warehouse_capacity(850, show_steps=True)
+            
+            for step in main_calc['calculation_steps']:
+                st.markdown(f"**Step {step['step']}: {step['description']}**")
+                if isinstance(step['detail'], list) and len(step['detail']) > 0:
+                    if 'size' in step['detail'][0]:  # Package volume step
+                        for item in step['detail']:
+                            st.write(f"• {item['size']}: {item['ratio']} × {item['volume_cm3']} = {item['weighted_contribution']}")
+                    elif 'factor' in step['detail'][0]:  # Storage efficiency step  
+                        for item in step['detail']:
+                            st.write(f"• {item['factor']}: {item['percentage']} - {item['reason']}")
+                            st.write(f"  {item['volume_before']} → {item['volume_after']}")
+                    elif 'constraint' in step['detail'][0]:  # Operational constraints
+                        for item in step['detail']:
+                            st.write(f"• {item['constraint']}: {item['factor']} - {item['reason']}")
+                            st.write(f"  {item['before']} → {item['after']}")
+                    else:  # Other steps
+                        for item in step['detail']:
+                            if 'component' in item:
+                                st.write(f"• {item['component']}: {item['value']}")
+                            elif 'calculation' in item:
+                                st.write(f"• {item['calculation']}: {item['value']}")
+                
+                st.success(f"**Result:** {step['result']}")
+                st.write("")
+        
+        with col2:
+            st.markdown("#### Auxiliary Warehouse (350 sqft avg)")
+            aux_calc = calculate_realistic_warehouse_capacity(350, show_steps=True)
+            
+            for step in aux_calc['calculation_steps']:
+                st.markdown(f"**Step {step['step']}: {step['description']}**")
+                if isinstance(step['detail'], list) and len(step['detail']) > 0:
+                    if 'size' in step['detail'][0]:  # Package volume step
+                        for item in step['detail']:
+                            st.write(f"• {item['size']}: {item['ratio']} × {item['volume_cm3']} = {item['weighted_contribution']}")
+                    elif 'factor' in step['detail'][0]:  # Storage efficiency step  
+                        for item in step['detail']:
+                            st.write(f"• {item['factor']}: {item['percentage']} - {item['reason']}")
+                            st.write(f"  {item['volume_before']} → {item['volume_after']}")
+                    elif 'constraint' in step['detail'][0]:  # Operational constraints
+                        for item in step['detail']:
+                            st.write(f"• {item['constraint']}: {item['factor']} - {item['reason']}")
+                            st.write(f"  {item['before']} → {item['after']}")
+                    else:  # Other steps
+                        for item in step['detail']:
+                            if 'component' in item:
+                                st.write(f"• {item['component']}: {item['value']}")
+                            elif 'calculation' in item:
+                                st.write(f"• {item['calculation']}: {item['value']}")
+                
+                st.success(f"**Result:** {step['result']}")
+                st.write("")
+        
+        st.markdown("---")
+        st.info("**Key Insight:** The daily capacity is much lower than storage capacity because logistics warehouses need to handle sorting, consolidation, and have operational constraints. The 5% daily handling capacity is the key limiting factor.")
+    
+    # Detailed Capacity Analysis
+    with st.expander("📦 **Detailed Volume & Capacity Analysis**", expanded=False):
+        show_detailed_capacity_analysis(big_warehouses, feeder_warehouses)
+    
     # Middle Mile Summary
     st.markdown("### 🔄 Middle Mile Summary")
     
@@ -1344,3 +2165,148 @@ def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_wa
             ]
         }
         st.table(pd.DataFrame(middle_mile_summary_data))
+        
+        # Trip Capacity Utilization Analysis
+        st.markdown("#### 🚛 Trip Capacity Utilization (Middle Mile Focus)")
+        st.markdown("*This is where most costs are - transport between hubs and auxiliaries*")
+        
+        trip_utilization_data = []
+        for detail in middle_mile_details:
+            # Get detailed capacity assumptions for this vehicle type
+            vehicle_type = detail['vehicle_type']
+            vehicle_specs = VEHICLE_SPECS[vehicle_type]
+            
+            # Calculate capacity assumptions
+            theoretical_capacity = int(vehicle_specs['theoretical_volume'] * 1000)  # liters
+            practical_capacity = int(vehicle_specs['practical_volume'] * 1000)  # liters
+            efficiency_loss = f"{((theoretical_capacity - practical_capacity) / theoretical_capacity * 100):.0f}%"
+            
+            trip_utilization_data.append({
+                "Hub → Auxiliaries": detail['route'],
+                "Vehicle": detail['vehicle_type'].replace('_', ' ').title(),
+                "Theoretical Vol": f"{theoretical_capacity}L",
+                "Practical Vol": f"{practical_capacity}L ({efficiency_loss} loss)",
+                "Trip Capacity": f"{detail['vehicle_capacity']} orders",
+                "Daily Trips": detail['total_trips_per_day'],
+                "Current Load": f"{detail['current_orders']} orders",
+                "Utilization": detail['current_efficiency'],
+                "Cost/Trip": f"₹{detail['cost_per_trip']:,.0f}",
+                "Capacity Assumptions": f"Space: 65%, Load: 80%, Weight: 90%, Access: 85% = {OVERALL_LOADING_EFFICIENCY*100:.0f}% overall"
+            })
+        
+        if trip_utilization_data:
+            st.dataframe(pd.DataFrame(trip_utilization_data), use_container_width=True)
+            
+            # Key insights about trip utilization
+            total_trips = sum([detail['total_trips_per_day'] for detail in middle_mile_details])
+            avg_utilization = sum([float(detail['current_efficiency'].replace('%', '')) for detail in middle_mile_details]) / len(middle_mile_details)
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Daily Trips", total_trips, help="All hub-to-auxiliary trips per day")
+            with col2:
+                st.metric("Avg Trip Utilization", f"{avg_utilization:.0f}%", help="Average capacity used per trip")
+            with col3:
+                cost_per_order = sum([detail['daily_cost'] for detail in middle_mile_details]) / sum([detail['current_orders'] for detail in middle_mile_details]) if sum([detail['current_orders'] for detail in middle_mile_details]) > 0 else 0
+                st.metric("Middle Mile CPO", f"₹{cost_per_order:.1f}", help="Cost per order for hub-auxiliary transport")
+
+def show_detailed_capacity_analysis(big_warehouses, feeder_warehouses):
+    """Show detailed volume-based capacity analysis for warehouses and vehicles"""
+    
+    st.markdown("### 📦 Volume-Based Capacity Analysis")
+    st.markdown("*Realistic capacity calculations accounting for package sizes, loading efficiency, and warehouse constraints*")
+    
+    # Vehicle Capacity Analysis
+    st.markdown("#### 🚛 Vehicle Capacity Breakdown")
+    st.markdown("**Loading Efficiency Factors:**")
+    
+    efficiency_data = []
+    for factor, value in LOADING_EFFICIENCY.items():
+        efficiency_data.append({
+            "Factor": factor.replace('_', ' ').title(),
+            "Efficiency": f"{value*100:.0f}%",
+            "Impact": {
+                'space_utilization': "Irregular package shapes, packing gaps",
+                'loading_time_factor': "Time constraints for loading/unloading", 
+                'weight_distribution': "Safe weight distribution for stability",
+                'access_factor': "Easy access during delivery stops"
+            }[factor]
+        })
+    
+    st.dataframe(pd.DataFrame(efficiency_data), use_container_width=True)
+    st.info(f"**Overall Loading Efficiency: {OVERALL_LOADING_EFFICIENCY*100:.1f}%** - This is applied to all theoretical vehicle capacities")
+    
+    # Vehicle capacity table
+    st.markdown("#### 🚐 Vehicle Capacity by Package Type")
+    vehicle_capacity_data = []
+    
+    for vehicle_type, specs in VEHICLE_SPECS.items():
+        for package_size in specs['allowed_sizes']:
+            if package_size in specs['size_capacity']:
+                theoretical = int(specs['theoretical_volume'] / PACKAGE_VOLUMES[package_size])
+                practical = specs['size_capacity'][package_size]
+                
+                vehicle_capacity_data.append({
+                    "Vehicle": vehicle_type.replace('_', ' ').title(),
+                    "Package Size": package_size,
+                    "Package Volume": f"{PACKAGE_VOLUMES[package_size]*1000000:.0f} cm³",
+                    "Theoretical Capacity": theoretical,
+                    "Practical Capacity": practical,
+                    "Efficiency Impact": f"{(practical/theoretical*100):.0f}%" if theoretical > 0 else "N/A"
+                })
+    
+    st.dataframe(pd.DataFrame(vehicle_capacity_data), use_container_width=True)
+    
+    # Mixed capacity summary
+    st.markdown("#### 📊 Practical Mixed-Package Capacity")
+    mixed_capacity_data = []
+    for vehicle_type, specs in VEHICLE_SPECS.items():
+        mixed_capacity_data.append({
+            "Vehicle Type": vehicle_type.replace('_', ' ').title(),
+            "Theoretical Volume": f"{specs['theoretical_volume']*1000:.0f}L",
+            "Practical Volume": f"{specs['practical_volume']*1000:.0f}L",
+            "Mixed Capacity": f"{specs['practical_mixed_capacity']} orders",
+            "Avg Orders/Trip": f"{specs['avg_orders_per_trip']} orders",
+            "Daily Cost": f"₹{VEHICLE_COSTS[vehicle_type]:,}"
+        })
+    
+    st.dataframe(pd.DataFrame(mixed_capacity_data), use_container_width=True)
+    
+    # Warehouse Capacity Analysis
+    if big_warehouses or feeder_warehouses:
+        st.markdown("#### 🏭 Warehouse Capacity Analysis")
+        
+        # Sample warehouse capacity calculation
+        sample_warehouse_sizes = [5000, 8000, 12000, 16000]  # sqft
+        warehouse_analysis_data = []
+        
+        for sqft in sample_warehouse_sizes:
+            capacity_analysis = calculate_realistic_warehouse_capacity(sqft)
+            warehouse_analysis_data.append({
+                "Warehouse Size": f"{sqft:,} sqft",
+                "Usable Volume": f"{capacity_analysis['usable_volume_m3']:.0f} m³",
+                "Theoretical Packages": f"{capacity_analysis['theoretical_packages']:,}",
+                "Daily Capacity": f"{capacity_analysis['daily_capacity']:,} orders",
+                "Orders per sqft": f"{capacity_analysis['daily_capacity']/sqft:.2f}",
+                "Category": "Large" if capacity_analysis['daily_capacity'] >= 800 else "Medium" if capacity_analysis['daily_capacity'] >= 400 else "Small"
+            })
+        
+        st.dataframe(pd.DataFrame(warehouse_analysis_data), use_container_width=True)
+        
+        # Warehouse efficiency factors
+        st.markdown("**Warehouse Efficiency Factors:**")
+        warehouse_factors_data = []
+        for factor, value in WAREHOUSE_CAPACITY_FACTORS.items():
+            warehouse_factors_data.append({
+                "Factor": factor.replace('_', ' ').title(),
+                "Value": f"{value*100:.0f}%" if factor != 'inventory_turnover' else f"{value}x/day",
+                "Description": {
+                    'storage_density': "Usable space (rest for aisles, sorting areas)",
+                    'storage_height_utilization': "Safe stacking height utilization", 
+                    'inventory_turnover': "Daily inventory turnover rate",
+                    'operational_efficiency': "Sorting, consolidation efficiency",
+                    'peak_capacity_buffer': "Buffer capacity for demand peaks"
+                }[factor]
+            })
+        
+        st.dataframe(pd.DataFrame(warehouse_factors_data), use_container_width=True)

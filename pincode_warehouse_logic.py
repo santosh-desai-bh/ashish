@@ -13,8 +13,26 @@ import folium
 def load_pincode_boundaries():
     """Load Bangalore pincode boundaries from GeoJSON"""
     try:
-        with open('/Users/blowhorn/Downloads/bengaluru.geojson', 'r') as f:
-            geojson_data = json.load(f)
+        # Try multiple possible locations for the GeoJSON file
+        possible_paths = [
+            '/Users/blowhorn/Downloads/bengaluru.geojson',
+            '/Users/blowhorn/ashish/bengaluru.geojson',
+            './bengaluru.geojson',
+            'bengaluru.geojson'
+        ]
+        
+        geojson_data = None
+        for path in possible_paths:
+            try:
+                with open(path, 'r') as f:
+                    geojson_data = json.load(f)
+                print(f"✅ Loaded GeoJSON from: {path}")
+                break
+            except FileNotFoundError:
+                continue
+        
+        if not geojson_data:
+            raise FileNotFoundError("GeoJSON file not found in any expected location")
         
         pincode_boundaries = {}
         for feature in geojson_data['features']:
@@ -162,8 +180,9 @@ def assign_feeders_to_hubs(selected_feeders, big_warehouses, max_distance_km=10)
                 nearest_hub = hub
         
         if nearest_hub:
-            # Estimate daily capacity based on order density and area
-            daily_capacity = min(int(feeder['order_count'] * 1.2), 200)  # 20% buffer, max 200
+            # Estimate daily capacity based on order density and area - minimum 100 orders
+            base_capacity = max(100, int(feeder['order_count'] * 1.2))  # 20% buffer, minimum 100
+            daily_capacity = min(base_capacity, 400)  # Maximum 400 for very high density areas
             
             feeder_assignments.append({
                 'id': f"PF{i+1}",  # Pincode Feeder
@@ -179,7 +198,7 @@ def assign_feeders_to_hubs(selected_feeders, big_warehouses, max_distance_km=10)
                 'density': feeder['density'],
                 'coverage_type': 'pincode_boundary',
                 'polygon': feeder['polygon'],
-                'size_category': 'Large' if daily_capacity > 120 else 'Medium' if daily_capacity > 60 else 'Small'
+                'size_category': 'Large' if daily_capacity >= 250 else 'Medium' if daily_capacity >= 150 else 'Small'
             })
     
     return feeder_assignments

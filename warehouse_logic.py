@@ -87,52 +87,55 @@ def place_feeder_warehouses_near_clusters(density_clusters, big_warehouses, max_
                     break
             
             if not too_close:
-                # Determine feeder warehouse capacity based on delivery radius and order density
+                # Determine feeder warehouse capacity - minimum 100-200 orders per warehouse
                 order_count = cluster['order_count']
                 
+                # Calculate base capacity with proper minimums
+                base_capacity = max(100, order_count * 1.2)  # 20% buffer above current orders
+                
                 if delivery_radius <= 2:
-                    # Dense network for 2km radius
-                    if order_count >= 80:
-                        capacity = 150
+                    # Dense network for 2km radius - smaller warehouses but still minimum 100
+                    if order_count >= 120:
+                        capacity = max(200, int(base_capacity))
                         size_category = "Large"
-                    elif order_count >= 40:
-                        capacity = 80
+                    elif order_count >= 60:
+                        capacity = max(150, int(base_capacity))
                         size_category = "Medium"
                     else:
-                        capacity = 40
+                        capacity = max(100, int(base_capacity))
                         size_category = "Small"
                 elif delivery_radius <= 3:
                     # Balanced network for 3km radius
-                    if order_count >= 100:
-                        capacity = 200
+                    if order_count >= 150:
+                        capacity = max(250, int(base_capacity))
                         size_category = "Large"
-                    elif order_count >= 60:
-                        capacity = 120
+                    elif order_count >= 80:
+                        capacity = max(180, int(base_capacity))
                         size_category = "Medium"
                     else:
-                        capacity = 60
+                        capacity = max(120, int(base_capacity))
                         size_category = "Small"
                 elif delivery_radius <= 5:
                     # Wider coverage for 5km radius
-                    if order_count >= 150:
-                        capacity = 300
+                    if order_count >= 200:
+                        capacity = max(350, int(base_capacity))
                         size_category = "Large"
-                    elif order_count >= 80:
-                        capacity = 180
+                    elif order_count >= 120:
+                        capacity = max(250, int(base_capacity))
                         size_category = "Medium"
                     else:
-                        capacity = 100
+                        capacity = max(150, int(base_capacity))
                         size_category = "Small"
                 else:
                     # Very wide coverage for 7km+ radius
-                    if order_count >= 200:
-                        capacity = 400
+                    if order_count >= 250:
+                        capacity = max(450, int(base_capacity))
                         size_category = "Large"
-                    elif order_count >= 100:
-                        capacity = 250
+                    elif order_count >= 150:
+                        capacity = max(300, int(base_capacity))
                         size_category = "Medium"
                     else:
-                        capacity = 150
+                        capacity = max(200, int(base_capacity))
                         size_category = "Small"
                 
                 feeder_warehouses.append({
@@ -153,26 +156,64 @@ def place_feeder_warehouses_near_clusters(density_clusters, big_warehouses, max_
     
     return feeder_warehouses
 
-def create_comprehensive_feeder_network(df_filtered, big_warehouses, min_cluster_size=20, max_distance_from_big=8.0, delivery_radius=2.0):
-    """Create a comprehensive feeder network ensuring delivery_radius coverage for all orders"""
+def create_pincode_based_feeder_network(df_filtered, big_warehouses, min_cluster_size, max_distance_from_big, delivery_radius):
+    """Create feeder network based on pincode clustering to eliminate overlaps"""
+    try:
+        from pincode_warehouse_logic import create_pincode_based_network
+        
+        # Use the pincode-based network creation
+        feeder_assignments, density_clusters = create_pincode_based_network(
+            df_filtered, big_warehouses, min_cluster_size, max_distance_from_big
+        )
+        
+        # Convert to the expected format for compatibility
+        feeder_warehouses = []
+        for feeder in feeder_assignments:
+            feeder_warehouses.append({
+                'id': feeder['id'],
+                'lat': feeder['lat'],
+                'lon': feeder['lon'],
+                'orders': feeder['coverage_orders'],
+                'capacity': feeder['capacity'],
+                'size_category': feeder['size_category'],
+                'parent': feeder['parent'],
+                'distance_to_parent': feeder['distance_to_parent'],
+                'density_score': feeder['density'],
+                'type': 'feeder',
+                'delivery_radius': delivery_radius,
+                'coverage_type': 'pincode_boundary',
+                'pincode': feeder.get('pincode', ''),
+                'area_name': feeder.get('area_name', '')
+            })
+        
+        print(f"✅ Created {len(feeder_warehouses)} pincode-based feeders")
+        return feeder_warehouses, density_clusters
+        
+    except Exception as e:
+        print(f"❌ Pincode system failed: {e}. Falling back to grid system.")
+        # Fallback to grid system if pincode system fails
+        return create_grid_based_feeder_network(df_filtered, big_warehouses, min_cluster_size, max_distance_from_big, delivery_radius)
+
+def create_grid_based_feeder_network(df_filtered, big_warehouses, min_cluster_size, max_distance_from_big, delivery_radius):
+    """Create feeder network using optimized grid system with minimal overlaps"""
     
-    # Adjust grid size based on delivery radius (smaller radius = finer grid)
+    # Use larger separation distances to minimize overlaps
     if delivery_radius <= 2:
-        grid_size = 0.005  # 0.5km grid for 2km radius
-        min_gap_orders = 10
-        feeder_separation = 1.5
-    elif delivery_radius <= 3:
-        grid_size = 0.007  # 0.7km grid for 3km radius
+        grid_size = 0.008  # Larger grid for less overlap
         min_gap_orders = 15
-        feeder_separation = 2.0
-    elif delivery_radius <= 5:
-        grid_size = 0.01   # 1km grid for 5km radius
+        feeder_separation = 3.0  # Increased separation
+    elif delivery_radius <= 3:
+        grid_size = 0.012  # Larger grid for 3km radius
         min_gap_orders = 20
-        feeder_separation = 3.0
+        feeder_separation = 4.0  # Increased separation
+    elif delivery_radius <= 5:
+        grid_size = 0.018  # Much larger grid for 5km radius
+        min_gap_orders = 30
+        feeder_separation = 6.0  # Much larger separation
     else:
-        grid_size = 0.015  # 1.5km grid for 7km+ radius
-        min_gap_orders = 25
-        feeder_separation = 4.0
+        grid_size = 0.025  # Very large grid for 7km+ radius
+        min_gap_orders = 40
+        feeder_separation = 8.0  # Very large separation
     
     # Step 1: Find high-density clusters with adjusted parameters
     density_clusters = find_order_density_clusters(df_filtered, min_cluster_size, grid_size)
@@ -258,17 +299,19 @@ def create_comprehensive_feeder_network(df_filtered, big_warehouses, min_cluster
                                 break
                         
                         if not too_close:
-                            # Adjust capacity based on delivery radius and order count
-                            if delivery_radius <= 2:
-                                capacity = min(100, max(30, len(cell_uncovered) * 2))
-                            elif delivery_radius <= 3:
-                                capacity = min(150, max(50, len(cell_uncovered) * 2.5))
-                            elif delivery_radius <= 5:
-                                capacity = min(200, max(80, len(cell_uncovered) * 3))
-                            else:
-                                capacity = min(300, max(100, len(cell_uncovered) * 4))
+                            # Adjust capacity based on delivery radius and order count - minimum 100 orders
+                            base_capacity = max(100, len(cell_uncovered) * 1.5)  # 50% buffer for uncovered areas
                             
-                            size_category = "Large" if capacity >= 150 else "Medium" if capacity >= 80 else "Small"
+                            if delivery_radius <= 2:
+                                capacity = max(100, min(200, int(base_capacity)))
+                            elif delivery_radius <= 3:
+                                capacity = max(120, min(250, int(base_capacity)))
+                            elif delivery_radius <= 5:
+                                capacity = max(150, min(300, int(base_capacity)))
+                            else:
+                                capacity = max(200, min(400, int(base_capacity)))
+                            
+                            size_category = "Large" if capacity >= 250 else "Medium" if capacity >= 150 else "Small"
                             
                             additional_feeders.append({
                                 'id': aux_id_counter,
@@ -293,6 +336,16 @@ def create_comprehensive_feeder_network(df_filtered, big_warehouses, min_cluster
         feeder['delivery_radius'] = delivery_radius
     
     return all_feeders, density_clusters
+
+def create_comprehensive_feeder_network(df_filtered, big_warehouses, min_cluster_size=20, max_distance_from_big=8.0, delivery_radius=2.0):
+    """Create a comprehensive feeder network using pincode-based clustering to minimize overlaps"""
+    
+    # Try pincode-based clustering first if postcode data is available
+    if 'postcode' in df_filtered.columns:
+        return create_pincode_based_feeder_network(df_filtered, big_warehouses, min_cluster_size, max_distance_from_big, delivery_radius)
+    
+    # Fallback to optimized grid system with minimal overlaps
+    return create_grid_based_feeder_network(df_filtered, big_warehouses, min_cluster_size, max_distance_from_big, delivery_radius)
 
 def determine_optimal_date_range(daily_summary, max_orders=5000):
     """Determine optimal date range for performance"""
@@ -362,37 +415,46 @@ def calculate_big_warehouse_locations(df_filtered):
                         'distance_from_center': ((zone_center_lat - lat_median)**2 + (zone_center_lon - lon_median)**2)**0.5
                     })
         
-        # Sort zones by density and proximity to city center
-        density_zones.sort(key=lambda x: (-x['density'], x['distance_from_center']))
+        # Sort zones by DENSITY FIRST - prioritize high order areas regardless of location
+        density_zones.sort(key=lambda x: -x['density'])  # Highest density first
         
-        # Select top density zones for big warehouses
-        urban_zones = []
-        for zone in density_zones:
-            if zone['distance_from_center'] <= 0.6 * max(lat_range, lon_range):
-                urban_zones.append(zone)
-                if len(urban_zones) >= big_warehouse_count * 2:
-                    break
+        # Select top density zones for big warehouses - no distance restriction
+        urban_zones = density_zones[:big_warehouse_count * 3]  # Get top density zones
         
-        # Place big warehouses (IF Hubs)
+        # Place big warehouses (IF Hubs) - prioritize density but ensure geographic spread
         if len(urban_zones) >= big_warehouse_count:
             big_warehouse_centers = []
             selected_zones = []
             
-            for i in range(big_warehouse_count):
+            # First, take the highest density zone
+            if urban_zones:
+                selected_zones.append(urban_zones[0])
+                big_warehouse_centers.append([urban_zones[0]['lat'], urban_zones[0]['lon']])
+            
+            # For remaining warehouses, balance density and distance
+            for i in range(1, big_warehouse_count):
                 best_zone = None
-                max_min_distance = 0
+                best_score = -1
                 
                 for zone in urban_zones:
                     if zone in selected_zones:
                         continue
                     
+                    # Calculate minimum distance to existing warehouses
                     min_distance_to_selected = float('inf')
                     for selected in selected_zones:
-                        distance = ((zone['lat'] - selected['lat'])**2 + (zone['lon'] - selected['lon'])**2)**0.5
+                        distance = ((zone['lat'] - selected['lat'])**2 + (zone['lon'] - selected['lon'])**2)**0.5 * 111  # km
                         min_distance_to_selected = min(min_distance_to_selected, distance)
                     
-                    if len(selected_zones) == 0 or min_distance_to_selected > max_min_distance:
-                        max_min_distance = min_distance_to_selected
+                    # Score combines density and distance (avoid too close warehouses)
+                    density_score = zone['density'] / max([z['density'] for z in urban_zones])  # Normalize 0-1
+                    distance_score = min(min_distance_to_selected / 10, 1.0)  # Normalize, prefer >10km apart
+                    
+                    # Combined score: 70% density, 30% distance
+                    combined_score = 0.7 * density_score + 0.3 * distance_score
+                    
+                    if combined_score > best_score:
+                        best_score = combined_score
                         best_zone = zone
                 
                 if best_zone:
