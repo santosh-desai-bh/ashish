@@ -1,0 +1,14 @@
+# Optional dependencies for enhanced First Mile clustering
+# The system works without these, but they provide more accurate distance calculations
+
+# For precise geographic distance calculations
+geopy>=2.0.0
+
+# For advanced clustering algorithms (currently not used but ready for future enhancements)
+scikit-learn>=1.0.0
+
+# Installation:
+# pip install geopy scikit-learn
+
+# Note: If these are not installed, the system will automatically use
+# built-in fallback implementations with the Haversine formula

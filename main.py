@@ -50,25 +50,59 @@ if csv_file is not None:
     # Simple date selection
     st.sidebar.header("📅 Network Design Parameters")
     
-    # Find the busiest day for optimal network design
+    # Find the busiest day and median day for capacity analysis
     busiest_day = daily_summary.loc[daily_summary['Orders'].idxmax(), 'Date']
     busiest_day_orders = daily_summary['Orders'].max()
     
-    # Simple day selector
-    if st.sidebar.button("🔥 Use Busiest Day", type="primary"):
-        start_date = busiest_day
-        end_date = busiest_day
-    else:
-        start_date = busiest_day
-        end_date = busiest_day
+    # Calculate median day orders
+    median_day_orders = int(daily_summary['Orders'].median())
+    median_day_idx = (daily_summary['Orders'] - median_day_orders).abs().idxmin()
+    median_day = daily_summary.loc[median_day_idx, 'Date']
     
-    st.sidebar.success(f"✅ Using {busiest_day} ({busiest_day_orders:,} orders)")
+    # Day selector with both options
+    day_choice = st.sidebar.radio(
+        "📊 Capacity Planning Basis:",
+        ["🔥 Busiest Day", "📊 Median Day"],
+        help="Choose whether to design for peak demand or typical demand"
+    )
+    
+    if day_choice == "🔥 Busiest Day":
+        start_date = busiest_day
+        end_date = busiest_day
+        selected_orders = busiest_day_orders
+        st.sidebar.success(f"✅ Using Busiest Day: {busiest_day} ({busiest_day_orders:,} orders)")
+    else:
+        start_date = median_day
+        end_date = median_day
+        selected_orders = median_day_orders
+        st.sidebar.success(f"✅ Using Median Day: {median_day} ({median_day_orders:,} orders)")
+    
+    # Show comparison and analysis insight
+    st.sidebar.info(f"📈 Busiest: {busiest_day_orders:,} | 📊 Median: {median_day_orders:,}")
+    
+    # Add capacity planning insight
+    if day_choice == "🔥 Busiest Day":
+        st.sidebar.markdown("""
+        **🔥 Peak Demand Planning**
+        - Designs for maximum daily capacity
+        - Higher infrastructure costs
+        - Better customer experience on busy days
+        - May be over-provisioned for typical days
+        """)
+    else:
+        st.sidebar.markdown("""
+        **📊 Typical Demand Planning**  
+        - Designs for average daily capacity
+        - Lower infrastructure costs
+        - Cost-efficient for normal operations
+        - May need surge capacity for peak days
+        """)
     
     # Simple capacity target
     st.sidebar.subheader("🎯 Design Target")
     target_daily_orders = st.sidebar.slider(
         "Target daily capacity", 
-        500, 5000, busiest_day_orders, 250,
+        500, 5000, selected_orders, 250,
         help="Design network to handle this many orders per day"
     )
     analysis_method = "📈 Representative Daily Sample"  # Always use this for consistency
@@ -422,7 +456,7 @@ if csv_file is not None:
             else:
                 target_capacity = len(df_filtered)
             
-            show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_warehouse_count, total_feeders, total_orders_in_radius, coverage_percentage, delivery_radius, current_vehicle_mix, target_capacity)
+            show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_warehouse_count, total_feeders, total_orders_in_radius, coverage_percentage, delivery_radius, current_vehicle_mix, target_capacity, median_day_orders, busiest_day_orders)
         except Exception as e:
             st.error(f"Analytics module error: {str(e)}")
             

@@ -2,6 +2,247 @@ import streamlit as st
 import pandas as pd
 import math
 
+# Try to import numpy, use built-in functions if not available
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    NUMPY_AVAILABLE = False
+
+# Try to import geopy, use fallback if not available
+try:
+    from geopy.distance import geodesic
+    GEOPY_AVAILABLE = True
+except ImportError:
+    GEOPY_AVAILABLE = False
+
+# Try to import sklearn, use fallback if not available  
+try:
+    from sklearn.cluster import KMeans
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+
+# ============================================================================ 
+# FIRST MILE PICKUP CLUSTERING FUNCTIONS
+# ============================================================================
+
+def calculate_distance_km(lat1, lon1, lat2, lon2):
+    """Calculate distance between two coordinates in kilometers"""
+    if GEOPY_AVAILABLE:
+        return geodesic((lat1, lon1), (lat2, lon2)).kilometers
+    else:
+        # Fallback: Haversine formula for distance calculation
+        R = 6371  # Earth's radius in kilometers
+        
+        lat1_rad = math.radians(lat1)
+        lat2_rad = math.radians(lat2)
+        delta_lat = math.radians(lat2 - lat1)
+        delta_lon = math.radians(lon2 - lon1)
+        
+        a = (math.sin(delta_lat / 2) * math.sin(delta_lat / 2) +
+             math.cos(lat1_rad) * math.cos(lat2_rad) *
+             math.sin(delta_lon / 2) * math.sin(delta_lon / 2))
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        
+        return R * c
+
+def create_pickup_clusters(pickup_hubs, vehicle_specs):
+    """Create proximity-based clusters of pickup locations for optimal vehicle assignment"""
+    
+    if len(pickup_hubs) == 0:
+        return []
+    
+    # Create a copy to work with
+    hubs_df = pickup_hubs.copy()
+    
+    try:
+        return _create_proximity_clusters(hubs_df, vehicle_specs)
+    except Exception as e:
+        # Fallback to simple clustering if proximity-based fails
+        if not GEOPY_AVAILABLE:
+            st.info("ℹ️ Using built-in distance calculations (install geopy for higher precision)")
+        else:
+            st.warning(f"⚠️ Using simplified clustering due to: {str(e)}")
+        return _create_simple_clusters(hubs_df, vehicle_specs)
+
+def _create_proximity_clusters(hubs_df, vehicle_specs):
+    """Create proximity-based clusters (main algorithm)"""
+    
+    # Step 1: Sort by order count (largest first for better clustering)
+    hubs_df = hubs_df.sort_values('order_count', ascending=False).reset_index(drop=True)
+    
+    clusters = []
+    processed_indices = set()
+    
+    for i, hub in hubs_df.iterrows():
+        if i in processed_indices:
+            continue
+            
+        # Start a new cluster with this hub
+        cluster = {
+            'main_hub': hub.to_dict(),
+            'additional_hubs': [],
+            'total_orders': hub['order_count'],
+            'center_lat': hub['pickup_lat'],
+            'center_lon': hub['pickup_long']
+        }
+        
+        processed_indices.add(i)
+        
+        # If this hub is already large enough for a truck, don't cluster it
+        if hub['order_count'] >= 300:
+            clusters.append(cluster)
+            continue
+        
+        # Look for nearby smaller hubs to club together
+        for j, other_hub in hubs_df.iterrows():
+            if j in processed_indices or j <= i:
+                continue
+                
+            # Calculate distance between hubs
+            distance = calculate_distance_km(
+                hub['pickup_lat'], hub['pickup_long'],
+                other_hub['pickup_lat'], other_hub['pickup_long']
+            )
+            
+            # Club if within 3km and total orders don't exceed truck capacity
+            if distance <= 3.0 and (cluster['total_orders'] + other_hub['order_count']) <= 500:
+                cluster['additional_hubs'].append(other_hub.to_dict())
+                cluster['total_orders'] += other_hub['order_count']
+                
+                # Update cluster center (weighted average)
+                total_weight = len(cluster['additional_hubs']) + 1
+                cluster['center_lat'] = (cluster['center_lat'] + other_hub['pickup_lat']) / 2
+                cluster['center_lon'] = (cluster['center_lon'] + other_hub['pickup_long']) / 2
+                
+                processed_indices.add(j)
+                
+                # Stop if we've reached a good truck capacity
+                if cluster['total_orders'] >= 200:
+                    break
+        
+        clusters.append(cluster)
+    
+    return clusters
+
+
+def _create_simple_clusters(hubs_df, vehicle_specs):
+    """Simple clustering fallback when proximity-based clustering fails"""
+    
+    clusters = []
+    
+    # Sort by order count (largest first)
+    hubs_df = hubs_df.sort_values('order_count', ascending=False).reset_index(drop=True)
+    
+    # Simple strategy: each hub becomes its own cluster
+    for _, hub in hubs_df.iterrows():
+        cluster = {
+            'main_hub': hub.to_dict(),
+            'additional_hubs': [],
+            'total_orders': hub['order_count'],
+            'center_lat': hub['pickup_lat'],
+            'center_lon': hub['pickup_long']
+        }
+        clusters.append(cluster)
+    
+    return clusters
+
+
+def assign_vehicles_to_clusters(pickup_clusters, vehicle_specs):
+    """Assign optimal vehicles to each pickup cluster based on capacity and cost efficiency"""
+    
+    vehicle_assignments = []
+    
+    for cluster in pickup_clusters:
+        total_orders = cluster['total_orders']
+        
+        # Determine optimal vehicle based on order count and cost efficiency
+        if total_orders >= 300:
+            # Large truck for high volume (300-500 orders)
+            vehicle_type = 'large_truck'
+            vehicle_count = 1
+            actual_capacity = min(total_orders, 500)
+            
+        elif total_orders >= 100:
+            # Mini truck for medium-high volume (100-299 orders)
+            vehicle_type = 'minitruck'
+            vehicle_count = 1
+            actual_capacity = min(total_orders, 200)
+            
+        elif total_orders >= 50:
+            # Auto for medium volume (50-99 orders)
+            vehicle_type = 'auto'
+            vehicle_count = 1
+            actual_capacity = min(total_orders, 70)
+            
+        else:
+            # Bike for small volume (30-49 orders)
+            vehicle_type = 'bike'
+            vehicle_count = 1
+            actual_capacity = min(total_orders, 50)
+        
+        # Calculate cost efficiency
+        daily_cost = vehicle_specs[vehicle_type]['daily_cost'] * vehicle_count
+        cost_per_order = daily_cost / actual_capacity if actual_capacity > 0 else 0
+        
+        assignment = {
+            'cluster': cluster,
+            'vehicle_type': vehicle_type,
+            'vehicle_count': vehicle_count,
+            'actual_capacity': actual_capacity,
+            'daily_cost': daily_cost,
+            'cost_per_order': cost_per_order,
+            'utilization': (total_orders / actual_capacity * 100) if actual_capacity > 0 else 0
+        }
+        
+        vehicle_assignments.append(assignment)
+    
+    return vehicle_assignments
+
+
+def calculate_fleet_summary(vehicle_assignments):
+    """Calculate summary statistics for the vehicle fleet"""
+    
+    fleet_summary = {
+        'bikes': {'count': 0, 'capacity': 0, 'cost': 0},
+        'autos': {'count': 0, 'capacity': 0, 'cost': 0},
+        'minitrucks': {'count': 0, 'capacity': 0, 'cost': 0},
+        'large_trucks': {'count': 0, 'capacity': 0, 'cost': 0},
+        'total_daily_cost': 0,
+        'total_capacity': 0,
+        'assignments': vehicle_assignments
+    }
+    
+    for assignment in vehicle_assignments:
+        vehicle_type = assignment['vehicle_type']
+        
+        if vehicle_type == 'bike':
+            fleet_summary['bikes']['count'] += assignment['vehicle_count']
+            fleet_summary['bikes']['capacity'] += assignment['actual_capacity']
+            fleet_summary['bikes']['cost'] += assignment['daily_cost']
+            
+        elif vehicle_type == 'auto':
+            fleet_summary['autos']['count'] += assignment['vehicle_count']
+            fleet_summary['autos']['capacity'] += assignment['actual_capacity']
+            fleet_summary['autos']['cost'] += assignment['daily_cost']
+            
+        elif vehicle_type == 'minitruck':
+            fleet_summary['minitrucks']['count'] += assignment['vehicle_count']
+            fleet_summary['minitrucks']['capacity'] += assignment['actual_capacity']
+            fleet_summary['minitrucks']['cost'] += assignment['daily_cost']
+            
+        elif vehicle_type == 'large_truck':
+            fleet_summary['large_trucks']['count'] += assignment['vehicle_count']
+            fleet_summary['large_trucks']['capacity'] += assignment['actual_capacity']
+            fleet_summary['large_trucks']['cost'] += assignment['daily_cost']
+        
+        fleet_summary['total_daily_cost'] += assignment['daily_cost']
+        fleet_summary['total_capacity'] += assignment['actual_capacity']
+    
+    return fleet_summary
+
+
 # ============================================================================
 # CENTRAL LOGISTICS CONFIGURATION - EDIT HERE TO SEE EFFECTS
 # ============================================================================
@@ -1393,7 +1634,355 @@ def calculate_last_mile_costs(df_filtered, big_warehouses, feeder_warehouses, de
     
     return total_last_mile_cost, last_mile_details
 
-def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_warehouse_count, total_feeders, total_orders_in_radius, coverage_percentage, delivery_radius=2, vehicle_mix='auto_heavy', target_capacity=None):
+def calculate_middle_mile_operations(big_warehouses, feeder_warehouses, current_orders):
+    """Calculate comprehensive middle mile operations including hub-to-auxiliary and relay routes"""
+    
+    # Middle mile vehicle specifications
+    vehicle_specs = {
+        'small_truck': {'capacity': 150, 'daily_cost': 2500},  # For relay operations
+        'medium_truck': {'capacity': 300, 'daily_cost': 3500}, # For hub-to-auxiliary
+        'large_truck': {'capacity': 500, 'daily_cost': 4500}   # For high-volume routes
+    }
+    
+    operations = {
+        'hub_to_auxiliary': [],
+        'relay_operations': [],
+        'total_capacity': 0,
+        'total_vehicles': 0,
+        'daily_cost': 0
+    }
+    
+    # Part 1: Hub-to-Auxiliary Operations (Primary Distribution)
+    for hub in big_warehouses:
+        hub_lat = hub.get('lat', 0)
+        hub_lon = hub.get('lon', 0)
+        hub_capacity = hub.get('capacity', 500)
+        
+        # Find auxiliary warehouses served by this hub (within reasonable distance)
+        served_auxiliaries = []
+        for aux in feeder_warehouses:
+            aux_lat = aux.get('lat', 0)
+            aux_lon = aux.get('lon', 0)
+            
+            # Calculate distance (using fallback if needed)
+            distance = calculate_distance_km(hub_lat, hub_lon, aux_lat, aux_lon)
+            
+            if distance <= 20:  # Hub serves auxiliaries within 20km
+                served_auxiliaries.append({
+                    'warehouse': aux,
+                    'distance': distance,
+                    'capacity': aux.get('capacity', 150)
+                })
+        
+        # Sort by distance for efficient routing
+        served_auxiliaries.sort(key=lambda x: x['distance'])
+        
+        # Calculate vehicle requirements for this hub's route
+        total_aux_capacity = sum([aux['capacity'] for aux in served_auxiliaries])
+        orders_to_distribute = min(hub_capacity, total_aux_capacity)
+        
+        # Round-robin strategy: One vehicle does multiple stops
+        if orders_to_distribute <= 150:
+            vehicle_type = 'small_truck'
+            vehicles_needed = 1
+        elif orders_to_distribute <= 300:
+            vehicle_type = 'medium_truck'  
+            vehicles_needed = 1
+        else:
+            # Use multiple vehicles in round-robin
+            vehicles_needed = (orders_to_distribute + 299) // 300  # Ceiling division
+            vehicle_type = 'medium_truck'
+        
+        route_capacity = vehicles_needed * vehicle_specs[vehicle_type]['capacity']
+        route_cost = vehicles_needed * vehicle_specs[vehicle_type]['daily_cost']
+        
+        operations['hub_to_auxiliary'].append({
+            'hub_id': hub.get('id', 'HUB'),
+            'served_auxiliaries': len(served_auxiliaries),
+            'vehicle_type': vehicle_type,
+            'vehicles_needed': vehicles_needed,
+            'route_capacity': route_capacity,
+            'daily_cost': route_cost,
+            'utilization': (orders_to_distribute / route_capacity * 100) if route_capacity > 0 else 0
+        })
+        
+        operations['total_capacity'] += route_capacity
+        operations['total_vehicles'] += vehicles_needed
+        operations['daily_cost'] += route_cost
+    
+    # Part 2: Relay Operations (Auxiliary-to-Auxiliary Load Balancing)
+    if len(feeder_warehouses) > 1:
+        # Identify high-demand and low-demand auxiliaries
+        aux_demands = []
+        for aux in feeder_warehouses:
+            aux_capacity = aux.get('capacity', 150)
+            # Estimate demand based on capacity utilization
+            estimated_demand = aux_capacity * 0.8  # Assume 80% utilization
+            aux_demands.append({
+                'warehouse': aux,
+                'demand': estimated_demand,
+                'capacity': aux_capacity,
+                'lat': aux.get('lat', 0),
+                'lon': aux.get('lon', 0)
+            })
+        
+        # Sort by demand to identify relay needs
+        aux_demands.sort(key=lambda x: x['demand'], reverse=True)
+        
+        # Create relay routes for load balancing (10-15% of auxiliaries need relay)
+        relay_routes_needed = max(1, len(feeder_warehouses) // 6)  # ~15% need relay
+        
+        for i in range(relay_routes_needed):
+            # Round-robin relay: one vehicle serves multiple auxiliaries
+            relay_capacity = vehicle_specs['small_truck']['capacity']
+            relay_cost = vehicle_specs['small_truck']['daily_cost']
+            
+            operations['relay_operations'].append({
+                'route_id': f'RELAY-{i+1}',
+                'vehicle_type': 'small_truck',
+                'vehicles_needed': 1,
+                'auxiliaries_served': min(4, len(feeder_warehouses) - i*4),  # 4 auxiliaries per relay vehicle
+                'route_capacity': relay_capacity,
+                'daily_cost': relay_cost,
+                'purpose': 'Load balancing and emergency stock transfer'
+            })
+            
+            operations['total_capacity'] += relay_capacity
+            operations['total_vehicles'] += 1
+            operations['daily_cost'] += relay_cost
+    
+    return operations
+
+
+def calculate_last_mile_operations(df_filtered, big_warehouses, feeder_warehouses):
+    """Calculate last mile delivery operations from both hubs and auxiliaries with package-size based vehicle assignment"""
+    
+    # Last mile vehicle specifications  
+    vehicle_specs = {
+        'bike': {
+            'capacity_range': (15, 20),
+            'suitable_packages': ['Small (<125 ccm)', 'Medium (125-1000 ccm)', 'Large (1000-3375 ccm)'],
+            'min_guarantee': {'orders': 18, 'amount': 700},
+            'variable_rate': 30,
+            'density_threshold': 25,
+            'avg_deliveries': 22  # Average deliveries per bike per day
+        },
+        'auto': {
+            'capacity_range': (22, 30), 
+            'suitable_packages': ['Small (<125 ccm)', 'Medium (125-1000 ccm)', 'Large (1000-3375 ccm)', 'XL(3375-10000 ccm)', 'XXL (>10000 ccm)'],  # Autos can carry all package sizes
+            'min_guarantee': {'orders': 22, 'amount': 900},
+            'variable_rate': 40,
+            'density_threshold': 35,
+            'avg_deliveries': 27  # Average deliveries per auto per day
+        }
+    }
+    
+    # Combine all delivery points (both hubs and auxiliaries)
+    delivery_points = []
+    
+    # Add main hubs as delivery points
+    for hub in big_warehouses:
+        delivery_points.append({
+            'id': hub.get('id', 'HUB'),
+            'type': 'main_hub',
+            'lat': hub.get('lat', 0),
+            'lon': hub.get('lon', 0),
+            'capacity': hub.get('capacity', 500)
+        })
+    
+    # Add auxiliary warehouses as delivery points  
+    for aux in feeder_warehouses:
+        delivery_points.append({
+            'id': aux.get('id', 'AUX'),
+            'type': 'auxiliary',
+            'lat': aux.get('lat', 0),
+            'lon': aux.get('lon', 0),
+            'capacity': aux.get('capacity', 80)  # Reduced from 150 to 80 for more realistic feeder capacity
+        })
+    
+    # Warehouse staffing costs
+    warehouse_staff_costs = {
+        'main_hub': {'people': 2, 'monthly_salary_per_person': 30000},
+        'auxiliary': {'people': 1, 'monthly_salary_per_person': 15000}
+    }
+    
+    operations = {
+        'delivery_points': [],
+        'total_bikes': 0,
+        'total_autos': 0,
+        'total_capacity': 0,
+        'total_daily_cost': 0,
+        'total_monthly_staff_cost': 0,
+        'package_distribution': {}
+    }
+    
+    # Analyze package distribution if available
+    if 'package_size' in df_filtered.columns:
+        package_dist = df_filtered['package_size'].value_counts(normalize=True)
+        operations['package_distribution'] = package_dist.to_dict()
+    else:
+        # Default distribution based on typical e-commerce
+        operations['package_distribution'] = {
+            'Small (<125 ccm)': 0.30,
+            'Medium (125-1000 ccm)': 0.25,
+            'Large (1000-3375 ccm)': 0.20,
+            'XL(3375-10000 ccm)': 0.15,
+            'XXL (>10000 ccm)': 0.10
+        }
+    
+    # Calculate total orders across all delivery points - use actual order volume, not theoretical capacity
+    # For realistic last mile operations, use the actual filtered order count
+    total_orders = len(df_filtered)  # Use actual order volume instead of theoretical capacity
+    
+    # Calculate optimal vehicle mix for better loading factor
+    # Strategy: Use autos for better efficiency since they can carry any package size
+    avg_bike_deliveries = vehicle_specs['bike']['avg_deliveries']
+    avg_auto_deliveries = vehicle_specs['auto']['avg_deliveries']
+    
+    xl_xxl_orders = 0
+    sml_orders = 0  # S/M/L packages
+    
+    for package_size, percentage in operations['package_distribution'].items():
+        package_orders = int(total_orders * percentage)
+        
+        if package_size in ['XL(3375-10000 ccm)', 'XXL (>10000 ccm)']:
+            xl_xxl_orders += package_orders
+        else:
+            sml_orders += package_orders  # S/M/L packages
+    
+    # Calculate minimum autos needed for XL/XXL packages (they can't go on bikes)
+    min_autos_for_xl_xxl = max(1, (xl_xxl_orders + avg_auto_deliveries - 1) // avg_auto_deliveries) if xl_xxl_orders > 0 else 0
+    
+    # Calculate remaining auto capacity for S/M/L packages
+    remaining_auto_capacity = (min_autos_for_xl_xxl * avg_auto_deliveries) - xl_xxl_orders
+    
+    # Optimize: Use autos for S/M/L packages too if they have spare capacity
+    sml_on_autos = min(sml_orders, remaining_auto_capacity)
+    sml_on_bikes = sml_orders - sml_on_autos
+    
+    # Account for auxiliary warehouse staff who can do bike deliveries
+    aux_staff_bike_capacity = len(feeder_warehouses) * avg_bike_deliveries  # Each aux has 1 staff who can deliver
+    
+    # Calculate bike requirements considering auxiliary staff capacity
+    remaining_bike_orders = max(0, sml_on_bikes - aux_staff_bike_capacity)
+    total_bikes_needed = max(0, (remaining_bike_orders + avg_bike_deliveries - 1) // avg_bike_deliveries) if remaining_bike_orders > 0 else 0
+    total_autos_needed = min_autos_for_xl_xxl
+    
+    # Final allocation
+    total_auto_orders = xl_xxl_orders + sml_on_autos
+    total_bike_orders = sml_on_bikes
+    
+    
+    # Calculate pricing for entire network
+    # Use variable pricing for the whole network (more efficient)
+    total_bike_cost = total_bike_orders * vehicle_specs['bike']['variable_rate']
+    total_auto_cost = total_auto_orders * vehicle_specs['auto']['variable_rate']
+    
+    # Distribute vehicles across delivery points based on their order volume
+    for point in delivery_points:
+        point_orders = int(point['capacity'] * 0.8)
+        point_percentage = point_orders / total_orders if total_orders > 0 else 0
+        
+        # Distribute orders optimally based on the global optimization
+        point_xl_xxl = 0
+        point_sml = 0
+        
+        for package_size, percentage in operations['package_distribution'].items():
+            package_orders = int(point_orders * percentage)
+            
+            if package_size in ['XL(3375-10000 ccm)', 'XXL (>10000 ccm)']:
+                point_xl_xxl += package_orders
+            else:
+                point_sml += package_orders
+        
+        # Apply the optimized allocation strategy to this point
+        # XL/XXL must go on autos
+        auto_orders = point_xl_xxl
+        
+        # For S/M/L packages, distribute proportionally based on global optimization
+        if sml_orders > 0:
+            point_sml_on_autos = int(point_sml * (sml_on_autos / sml_orders))
+            point_sml_on_bikes = point_sml - point_sml_on_autos
+        else:
+            point_sml_on_autos = 0
+            point_sml_on_bikes = 0
+        
+        auto_orders += point_sml_on_autos
+        bike_orders = point_sml_on_bikes
+        
+        # Allocate vehicles proportionally (round to ensure we have drivers)
+        bikes_allocated = max(0, int(total_bikes_needed * (bike_orders / total_bike_orders))) if total_bike_orders > 0 else 0
+        autos_allocated = max(0, int(total_autos_needed * (auto_orders / total_auto_orders))) if total_auto_orders > 0 else 0
+        
+        # Ensure at least 1 vehicle if there are orders
+        if bike_orders > 0 and bikes_allocated == 0:
+            bikes_allocated = 1
+        if auto_orders > 0 and autos_allocated == 0:
+            autos_allocated = 1
+        
+        # Calculate delivery costs proportionally
+        bike_cost = (bike_orders * vehicle_specs['bike']['variable_rate']) if bike_orders > 0 else 0
+        auto_cost = (auto_orders * vehicle_specs['auto']['variable_rate']) if auto_orders > 0 else 0
+        
+        # Add warehouse staff costs
+        staff_config = warehouse_staff_costs[point['type']]
+        monthly_staff_cost = staff_config['people'] * staff_config['monthly_salary_per_person']
+        daily_staff_cost = monthly_staff_cost / 30  # Convert to daily cost
+        
+        # Check if auxiliary staff is doing bike deliveries (reduces external bike cost)
+        staff_doing_deliveries = 0
+        if point['type'] == 'auxiliary' and bike_orders > 0:
+            staff_bike_deliveries = min(bike_orders, avg_bike_deliveries)  # Staff can handle up to avg_bike_deliveries per day
+            if staff_bike_deliveries > 0:
+                bike_cost = max(0, bike_cost - (staff_bike_deliveries * vehicle_specs['bike']['variable_rate']))
+                staff_doing_deliveries = 1
+                bikes_allocated = max(0, bikes_allocated - 1)  # Reduce external bike requirement
+        
+        point_capacity = bike_orders + auto_orders
+        point_cost = bike_cost + auto_cost + daily_staff_cost
+        
+        operations['delivery_points'].append({
+            'point': point,
+            'bike_orders': bike_orders,
+            'auto_orders': auto_orders,
+            'bikes_needed': bikes_allocated,
+            'autos_needed': autos_allocated,
+            'bike_cost': bike_cost,
+            'auto_cost': auto_cost,
+            'staff_cost': daily_staff_cost,
+            'staff_count': staff_config['people'],
+            'staff_doing_deliveries': staff_doing_deliveries,
+            'total_orders': point_capacity,
+            'total_cost': point_cost,
+            'pricing_model': 'Variable',  # Use variable pricing for efficiency
+            'avg_deliveries_per_bike': bike_orders / bikes_allocated if bikes_allocated > 0 else 0,
+            'avg_deliveries_per_auto': auto_orders / autos_allocated if autos_allocated > 0 else 0
+        })
+    
+    # Calculate total staff costs
+    total_monthly_staff_cost = 0
+    total_daily_staff_cost = 0
+    
+    for hub in big_warehouses:
+        total_monthly_staff_cost += warehouse_staff_costs['main_hub']['people'] * warehouse_staff_costs['main_hub']['monthly_salary_per_person']
+    
+    for aux in feeder_warehouses:
+        total_monthly_staff_cost += warehouse_staff_costs['auxiliary']['people'] * warehouse_staff_costs['auxiliary']['monthly_salary_per_person']
+    
+    total_daily_staff_cost = total_monthly_staff_cost / 30
+    
+    # Set totals
+    operations['total_bikes'] = total_bikes_needed
+    operations['total_autos'] = total_autos_needed
+    operations['total_capacity'] = total_bike_orders + total_auto_orders
+    operations['total_daily_cost'] = total_bike_cost + total_auto_cost + total_daily_staff_cost
+    operations['total_monthly_staff_cost'] = total_monthly_staff_cost
+    operations['total_daily_staff_cost'] = total_daily_staff_cost
+    
+    return operations
+
+
+def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_warehouse_count, total_feeders, total_orders_in_radius, coverage_percentage, delivery_radius=2, vehicle_mix='auto_heavy', target_capacity=None, median_day_orders=None, busiest_day_orders=None):
     """Show simplified network capacity analysis focused on key insights"""
     
     st.subheader("📊 Network Capacity Analysis")
@@ -1407,20 +1996,68 @@ def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_wa
     else:
         pickup_hubs = df_filtered.groupby(['pickup', 'pickup_long', 'pickup_lat']).size().reset_index(name='order_count')
     
-    # First Mile Capacity: Based on pickup hub collection capability
+    # First Mile Capacity: Proximity-based pickup clustering with optimal vehicle assignment
     total_pickup_locations = len(pickup_hubs)
-    # Assume each pickup location can handle ~150 orders/day with proper vehicles
-    first_mile_capacity = total_pickup_locations * 150
     
-    # Middle Mile Capacity: Hub + Hub-to-Auxiliary capacity
+    # Vehicle specifications: capacity ranges and daily costs
+    vehicle_specs = {
+        'bike': {'min_capacity': 30, 'max_capacity': 50, 'daily_cost': 700},
+        'auto': {'min_capacity': 50, 'max_capacity': 70, 'daily_cost': 900},
+        'minitruck': {'min_capacity': 100, 'max_capacity': 200, 'daily_cost': 1400},
+        'large_truck': {'min_capacity': 300, 'max_capacity': 500, 'daily_cost': 2600}
+    }
+    
+    # Step 1: Create pickup clusters based on proximity and capacity
+    pickup_clusters = create_pickup_clusters(pickup_hubs, vehicle_specs)
+    
+    # Step 2: Assign optimal vehicles to each cluster
+    vehicle_assignments = assign_vehicles_to_clusters(pickup_clusters, vehicle_specs)
+    
+    # Step 3: Calculate fleet composition and costs
+    fleet_summary = calculate_fleet_summary(vehicle_assignments)
+    
+    # Extract summary data for display
+    total_bikes = fleet_summary['bikes']['count']
+    total_autos = fleet_summary['autos']['count'] 
+    total_minitrucks = fleet_summary['minitrucks']['count']
+    total_large_trucks = fleet_summary['large_trucks']['count']
+    
+    bike_daily_capacity = fleet_summary['bikes']['capacity']
+    auto_daily_capacity = fleet_summary['autos']['capacity']
+    truck_daily_capacity = fleet_summary['minitrucks']['capacity']
+    large_truck_daily_capacity = fleet_summary['large_trucks']['capacity']
+    
+    # Total first mile capacity and cost
+    first_mile_capacity = (bike_daily_capacity + auto_daily_capacity + 
+                          truck_daily_capacity + large_truck_daily_capacity)
+    total_daily_cost = fleet_summary['total_daily_cost']
+    
+    # Total vehicles for trip calculation
+    total_vehicles = total_bikes + total_autos + total_minitrucks + total_large_trucks
+    total_clusters = len(pickup_clusters)
+    
+    # Middle Mile Capacity: Enhanced analysis with relay operations and round-robin strategy
     total_hub_capacity = sum([hub.get('capacity', 500) for hub in big_warehouses])
     total_auxiliary_capacity = sum([feeder.get('capacity', 150) for feeder in feeder_warehouses])
-    # Middle mile is limited by the minimum of hub sorting capacity and hub-auxiliary transport
-    middle_mile_capacity = min(total_hub_capacity, total_auxiliary_capacity)
     
-    # Last Mile Capacity: Auxiliary warehouse to customer delivery
-    # Assume each auxiliary can deliver its full capacity per day
-    last_mile_capacity = total_auxiliary_capacity
+    # Calculate comprehensive middle mile operations
+    middle_mile_analysis = calculate_middle_mile_operations(
+        big_warehouses, feeder_warehouses, current_orders
+    )
+    
+    # Middle mile capacity considers both hub-to-auxiliary AND relay operations
+    middle_mile_capacity = middle_mile_analysis['total_capacity']
+    middle_mile_vehicle_count = middle_mile_analysis['total_vehicles']
+    middle_mile_daily_cost = middle_mile_analysis['daily_cost']
+    
+    # Last Mile Capacity: Enhanced delivery operations from both hubs and auxiliaries
+    last_mile_analysis = calculate_last_mile_operations(df_filtered, big_warehouses, feeder_warehouses)
+    
+    # Extract summary data for display
+    last_mile_capacity = last_mile_analysis['total_capacity']
+    last_mile_bikes = last_mile_analysis['total_bikes']
+    last_mile_autos = last_mile_analysis['total_autos']
+    last_mile_daily_cost = last_mile_analysis['total_daily_cost']
     
     # Network bottleneck is the minimum capacity across all miles
     network_bottleneck = min(first_mile_capacity, middle_mile_capacity, last_mile_capacity)
@@ -1433,21 +2070,47 @@ def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_wa
         first_util = (current_orders / first_mile_capacity * 100) if first_mile_capacity > 0 else 0
         color = "🟢" if first_util < 70 else "🟡" if first_util < 90 else "🔴"
         st.metric("Collection Capacity", f"{first_util:.0f}%", f"{current_orders:,} of {first_mile_capacity:,}")
-        st.write(f"{color} {total_pickup_locations} pickup locations")
+        
+        # Vehicle breakdown with cost
+        st.write(f"{color} **{total_vehicles} vehicles** across {total_clusters} clusters:")
+        if total_bikes > 0:
+            st.write(f"🏍️ **{total_bikes}** bikes ({bike_daily_capacity:,} capacity) - ₹{fleet_summary['bikes']['cost']:,}/day")
+        if total_autos > 0:
+            st.write(f"🛺 **{total_autos}** autos ({auto_daily_capacity:,} capacity) - ₹{fleet_summary['autos']['cost']:,}/day")  
+        if total_minitrucks > 0:
+            st.write(f"🚛 **{total_minitrucks}** minitrucks ({truck_daily_capacity:,} capacity) - ₹{fleet_summary['minitrucks']['cost']:,}/day")
+        if total_large_trucks > 0:
+            st.write(f"🚚 **{total_large_trucks}** large trucks ({large_truck_daily_capacity:,} capacity) - ₹{fleet_summary['large_trucks']['cost']:,}/day")
+        st.write(f"💰 **Total**: ₹{total_daily_cost:,}/day | 📍 {total_pickup_locations} locations")
         
     with col2:
         st.markdown("#### 🔄 Middle Mile") 
         middle_util = (current_orders / middle_mile_capacity * 100) if middle_mile_capacity > 0 else 0
         color = "🟢" if middle_util < 70 else "🟡" if middle_util < 90 else "🔴"
-        st.metric("Hub-Auxiliary Flow", f"{middle_util:.0f}%", f"{current_orders:,} of {middle_mile_capacity:,}")
-        st.write(f"{color} Hub: {total_hub_capacity:,}, Aux: {total_auxiliary_capacity:,}")
+        st.metric("Hub-Auxiliary + Relay", f"{middle_util:.0f}%", f"{current_orders:,} of {middle_mile_capacity:,}")
+        
+        # Enhanced middle mile breakdown
+        hub_routes = len(middle_mile_analysis['hub_to_auxiliary'])
+        relay_routes = len(middle_mile_analysis['relay_operations'])
+        st.write(f"{color} **{middle_mile_vehicle_count} vehicles** across:")
+        st.write(f"📦 **{hub_routes}** hub routes (main distribution)")
+        st.write(f"🔄 **{relay_routes}** relay routes (load balancing)")
+        st.write(f"💰 ₹{middle_mile_daily_cost:,}/day")
         
     with col3:
         st.markdown("#### 🏠 Last Mile")
         last_util = (current_orders / last_mile_capacity * 100) if last_mile_capacity > 0 else 0
         color = "🟢" if last_util < 70 else "🟡" if last_util < 90 else "🔴"
         st.metric("Delivery Capacity", f"{last_util:.0f}%", f"{current_orders:,} of {last_mile_capacity:,}")
-        st.write(f"{color} {len(feeder_warehouses)} auxiliary warehouses")
+        
+        # Enhanced last mile breakdown
+        total_delivery_points = len(big_warehouses) + len(feeder_warehouses)
+        total_drivers = last_mile_bikes + last_mile_autos
+        st.write(f"{color} **{total_drivers} drivers** across:")
+        st.write(f"🏍️ **{last_mile_bikes}** bikes (S/M/L packages)")
+        st.write(f"🛺 **{last_mile_autos}** autos (XL/XXL packages)")
+        st.write(f"📍 {total_delivery_points} delivery points")
+        st.write(f"💰 ₹{last_mile_daily_cost:,}/day")
     
     # Show network bottleneck
     st.markdown("#### 🚨 Network Bottleneck")
@@ -1461,6 +2124,410 @@ def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_wa
     else:
         st.error(f"🔴 **{bottleneck_name}** is the bottleneck at {bottleneck_util:.0f}% utilization. Urgent capacity expansion needed!")
     
+    # Add median vs busiest day capacity analysis if data is available
+    if median_day_orders is not None and busiest_day_orders is not None:
+        st.markdown("#### 📊 Capacity Planning: Median vs Busiest Day")
+        
+        med_col, busy_col, rec_col = st.columns(3)
+        
+        with med_col:
+            st.markdown("**📊 Median Day Analysis**")
+            median_util = (median_day_orders / network_bottleneck * 100) if network_bottleneck > 0 else 0
+            color = "🟢" if median_util < 70 else "🟡" if median_util < 90 else "🔴"
+            st.metric("Network Utilization", f"{median_util:.0f}%", f"{median_day_orders:,} orders")
+            st.write(f"{color} Typical day performance")
+        
+        with busy_col:
+            st.markdown("**🔥 Busiest Day Analysis**")
+            busy_util = (busiest_day_orders / network_bottleneck * 100) if network_bottleneck > 0 else 0
+            color = "🟢" if busy_util < 70 else "🟡" if busy_util < 90 else "🔴"
+            st.metric("Network Utilization", f"{busy_util:.0f}%", f"{busiest_day_orders:,} orders")
+            st.write(f"{color} Peak day performance")
+        
+        with rec_col:
+            st.markdown("**💡 Recommendation**")
+            if median_util < 70 and busy_util < 90:
+                st.success("✅ **Optimal sizing** - handles both typical and peak days well")
+            elif median_util < 50 and busy_util < 70:
+                st.info("📉 **Over-provisioned** - consider reducing capacity or expanding coverage")
+            elif busy_util > 90:
+                st.error("🚨 **Under-provisioned** - peak days will cause service delays")
+                additional_capacity = int(busiest_day_orders * 1.2 - network_bottleneck)
+                st.write(f"Consider adding {additional_capacity:,} daily capacity")
+            else:
+                st.warning("⚠️ **Tight capacity** - monitor peak days closely")
+    
+    # Detailed Middle Mile Operations Analysis
+    with st.expander("🔄 **Detailed Middle Mile Operations Analysis**", expanded=False):
+        st.markdown("#### 🎯 Round-Robin Middle Mile Strategy")
+        st.info(f"""
+        **Enhanced Middle Mile Operations**: Hub-to-Auxiliary + Relay Operations
+        
+        **Round-Robin Vehicle Strategy**:
+        - **One vehicle** serves multiple stops to maximize efficiency
+        - **Hub Routes**: Primary distribution from main hubs to auxiliary warehouses
+        - **Relay Routes**: Load balancing and emergency stock transfer between auxiliaries
+        
+        **Vehicle Types**: Small Truck (₹2,500), Medium Truck (₹3,500), Large Truck (₹4,500)
+        """)
+        
+        # Hub-to-Auxiliary Operations
+        if middle_mile_analysis['hub_to_auxiliary']:
+            st.markdown("#### 📦 Hub-to-Auxiliary Operations")
+            
+            hub_col1, hub_col2 = st.columns(2)
+            
+            with hub_col1:
+                total_hub_vehicles = sum([route['vehicles_needed'] for route in middle_mile_analysis['hub_to_auxiliary']])
+                total_hub_capacity = sum([route['route_capacity'] for route in middle_mile_analysis['hub_to_auxiliary']])
+                total_hub_cost = sum([route['daily_cost'] for route in middle_mile_analysis['hub_to_auxiliary']])
+                
+                st.metric("Hub Routes", f"{len(middle_mile_analysis['hub_to_auxiliary'])}")
+                st.metric("Vehicles", f"{total_hub_vehicles}")
+                st.metric("Total Capacity", f"{total_hub_capacity:,} orders")
+                st.metric("Daily Cost", f"₹{total_hub_cost:,}")
+            
+            with hub_col2:
+                st.markdown("**Route Details:**")
+                for route in middle_mile_analysis['hub_to_auxiliary']:
+                    st.write(f"• {route['hub_id']}: {route['vehicles_needed']} {route['vehicle_type'].replace('_', ' ')} → {route['served_auxiliaries']} auxiliaries")
+                    st.write(f"  Capacity: {route['route_capacity']:,} | Utilization: {route['utilization']:.1f}%")
+        
+        # Relay Operations
+        if middle_mile_analysis['relay_operations']:
+            st.markdown("#### 🔄 Relay Operations")
+            
+            relay_col1, relay_col2 = st.columns(2)
+            
+            with relay_col1:
+                total_relay_vehicles = sum([route['vehicles_needed'] for route in middle_mile_analysis['relay_operations']])
+                total_relay_capacity = sum([route['route_capacity'] for route in middle_mile_analysis['relay_operations']])
+                total_relay_cost = sum([route['daily_cost'] for route in middle_mile_analysis['relay_operations']])
+                
+                st.metric("Relay Routes", f"{len(middle_mile_analysis['relay_operations'])}")
+                st.metric("Vehicles", f"{total_relay_vehicles}")
+                st.metric("Total Capacity", f"{total_relay_capacity:,} orders")
+                st.metric("Daily Cost", f"₹{total_relay_cost:,}")
+            
+            with relay_col2:
+                st.markdown("**Relay Routes:**")
+                for route in middle_mile_analysis['relay_operations']:
+                    st.write(f"• {route['route_id']}: {route['vehicles_needed']} {route['vehicle_type'].replace('_', ' ')}")
+                    st.write(f"  Serves: {route['auxiliaries_served']} auxiliaries")
+                    st.write(f"  Purpose: {route['purpose']}")
+        
+        # Cost Efficiency Analysis
+        st.markdown("#### 💰 Middle Mile Cost Efficiency")  
+        
+        cost_col1, cost_col2, cost_col3 = st.columns(3)
+        
+        with cost_col1:
+            st.markdown("**Overall Metrics**")
+            total_middle_vehicles = middle_mile_analysis['total_vehicles']
+            total_middle_capacity = middle_mile_analysis['total_capacity']
+            total_middle_cost = middle_mile_analysis['daily_cost']
+            
+            st.metric("Total Vehicles", f"{total_middle_vehicles}")
+            st.metric("Total Capacity", f"{total_middle_capacity:,} orders")
+            st.metric("Cost per Vehicle", f"₹{total_middle_cost/total_middle_vehicles:,.0f}" if total_middle_vehicles > 0 else "₹0")
+        
+        with cost_col2:
+            st.markdown("**Efficiency Ratios**")
+            cost_per_order = total_middle_cost / total_middle_capacity if total_middle_capacity > 0 else 0
+            capacity_per_vehicle = total_middle_capacity / total_middle_vehicles if total_middle_vehicles > 0 else 0
+            
+            st.metric("Cost per Order", f"₹{cost_per_order:.1f}")
+            st.metric("Capacity per Vehicle", f"{capacity_per_vehicle:.0f} orders")
+            st.metric("Utilization", f"{middle_util:.1f}%")
+        
+        with cost_col3:
+            st.markdown("**Round-Robin Benefits**")
+            naive_vehicles = len(big_warehouses) + len(feeder_warehouses)  # One vehicle per warehouse
+            vehicle_savings = naive_vehicles - total_middle_vehicles
+            cost_savings_pct = (vehicle_savings / naive_vehicles * 100) if naive_vehicles > 0 else 0
+            
+            st.metric("Vehicle Reduction", f"{vehicle_savings} vehicles")
+            st.metric("Efficiency Gain", f"{cost_savings_pct:.1f}%")
+            st.metric("Strategy", "Round-Robin Multi-Stop")
+
+    # Detailed Last Mile Delivery Analysis
+    with st.expander("🏠 **Detailed Last Mile Delivery Analysis**", expanded=False):
+        st.markdown("#### 📦 Package-Size Based Vehicle Assignment")
+        st.info(f"""
+        **Smart Last Mile Strategy**: Delivery from both Main Hubs + Auxiliary Warehouses
+        
+        **Package-Size Vehicle Assignment**:
+        - **🏍️ Bikes**: Small, Medium, Large packages (S/M/L) - 22 deliveries/day avg
+        - **🛺 Autos**: All package sizes (S/M/L/XL/XXL) for better loading factor - 27 deliveries/day avg
+        
+        **Warehouse Staffing**:
+        - **Main Hubs**: 2 staff @ ₹30,000/month each (warehouse operations)
+        - **Auxiliaries**: 1 staff @ ₹15,000/month (can do bike deliveries to save cost)
+        
+        **Density-Based Pricing**:
+        - **Low Density**: Minimum guarantee + variable rate
+        - **High Density**: Fully variable per-order pricing
+        """)
+        
+        # Package Distribution Analysis
+        if last_mile_analysis['package_distribution']:
+            st.markdown("#### 📊 Package Size Distribution")
+            
+            pkg_col1, pkg_col2 = st.columns(2)
+            
+            with pkg_col1:
+                st.markdown("**Current Distribution:**")
+                bike_packages = 0
+                auto_packages = 0
+                
+                for pkg_size, percentage in last_mile_analysis['package_distribution'].items():
+                    percentage_display = f"{percentage:.1%}"
+                    if pkg_size in ['Small (<125 ccm)', 'Medium (125-1000 ccm)', 'Large (1000-3375 ccm)']:
+                        st.write(f"🏍️ {pkg_size}: {percentage_display}")
+                        bike_packages += percentage
+                    else:
+                        st.write(f"🛺 {pkg_size}: {percentage_display}")
+                        auto_packages += percentage
+                        
+            with pkg_col2:
+                st.markdown("**Vehicle Assignment:**")
+                st.metric("Bike-Suitable Packages", f"{bike_packages:.1%}")
+                st.metric("Auto-Required Packages", f"{auto_packages:.1%}")
+                
+                avg_cost_per_order = last_mile_daily_cost / last_mile_capacity if last_mile_capacity > 0 else 0
+                st.metric("Avg Cost per Order", f"₹{avg_cost_per_order:.1f}")
+        
+        # Warehouse Staff Cost Analysis
+        st.markdown("#### 👥 Warehouse Staff Costs")
+        
+        staff_col1, staff_col2, staff_col3 = st.columns(3)
+        
+        with staff_col1:
+            st.markdown("**📊 Staff Summary**")
+            st.metric("Total Monthly Staff Cost", f"₹{last_mile_analysis['total_monthly_staff_cost']:,}")
+            st.metric("Total Daily Staff Cost", f"₹{last_mile_analysis['total_daily_staff_cost']:,}")
+            
+        with staff_col2:
+            st.markdown("**🏢 Main Hub Staff**")
+            main_hub_staff = len(big_warehouses) * 2
+            main_hub_monthly = len(big_warehouses) * 2 * 30000
+            st.metric("Staff Count", f"{main_hub_staff} people")
+            st.metric("Monthly Cost", f"₹{main_hub_monthly:,}")
+            st.write("• 2 people per hub @ ₹30k/month")
+            
+        with staff_col3:
+            st.markdown("**📦 Auxiliary Staff**")
+            aux_staff = len(feeder_warehouses)
+            aux_monthly = len(feeder_warehouses) * 15000
+            aux_doing_deliveries = sum([dp.get('staff_doing_deliveries', 0) for dp in last_mile_analysis['delivery_points'] if dp['point']['type'] == 'auxiliary'])
+            st.metric("Staff Count", f"{aux_staff} people")
+            st.metric("Monthly Cost", f"₹{aux_monthly:,}")
+            st.write(f"• 1 person per aux @ ₹15k/month")
+            st.write(f"• {aux_doing_deliveries} staff doing bike deliveries")
+
+        # Delivery Points Analysis
+        st.markdown("#### 📍 Delivery Points Breakdown")
+        
+        if last_mile_analysis['delivery_points']:
+            main_hubs = [dp for dp in last_mile_analysis['delivery_points'] if dp['point']['type'] == 'main_hub']
+            auxiliaries = [dp for dp in last_mile_analysis['delivery_points'] if dp['point']['type'] == 'auxiliary']
+            
+            delivery_col1, delivery_col2 = st.columns(2)
+            
+            with delivery_col1:
+                st.markdown("**🏢 Main Hub Deliveries:**")
+                if main_hubs:
+                    hub_bikes = sum([dp['bikes_needed'] for dp in main_hubs])
+                    hub_autos = sum([dp['autos_needed'] for dp in main_hubs])
+                    hub_orders = sum([dp['total_orders'] for dp in main_hubs])
+                    hub_cost = sum([dp['total_cost'] for dp in main_hubs])
+                    hub_staff_cost = sum([dp['staff_cost'] for dp in main_hubs])
+                    
+                    st.metric("Hubs", f"{len(main_hubs)}")
+                    st.metric("Drivers", f"{hub_bikes + hub_autos} ({hub_bikes}🏍️ + {hub_autos}🛺)")
+                    st.metric("Orders", f"{hub_orders:,}")
+                    st.metric("Daily Cost", f"₹{hub_cost:,}")
+                    st.write(f"  Staff Cost: ₹{hub_staff_cost:,}/day")
+                else:
+                    st.write("No main hub deliveries")
+            
+            with delivery_col2:
+                st.markdown("**📦 Auxiliary Deliveries:**")
+                if auxiliaries:
+                    aux_bikes = sum([dp['bikes_needed'] for dp in auxiliaries])
+                    aux_autos = sum([dp['autos_needed'] for dp in auxiliaries])
+                    aux_orders = sum([dp['total_orders'] for dp in auxiliaries])
+                    aux_cost = sum([dp['total_cost'] for dp in auxiliaries])
+                    aux_staff_cost = sum([dp['staff_cost'] for dp in auxiliaries])
+                    
+                    st.metric("Auxiliaries", f"{len(auxiliaries)}")
+                    st.metric("Drivers", f"{aux_bikes + aux_autos} ({aux_bikes}🏍️ + {aux_autos}🛺)")
+                    st.metric("Orders", f"{aux_orders:,}")
+                    st.metric("Daily Cost", f"₹{aux_cost:,}")
+                    st.write(f"  Staff Cost: ₹{aux_staff_cost:,}/day")
+                else:
+                    st.write("No auxiliary deliveries")
+        
+        # Pricing Model Analysis
+        st.markdown("#### 💰 Pricing Model Breakdown")
+        
+        pricing_col1, pricing_col2, pricing_col3 = st.columns(3)
+        
+        with pricing_col1:
+            st.markdown("**🏍️ Bike Pricing**")
+            st.write("• **Threshold**: >25 orders")
+            st.write("• **Guarantee**: ₹700 for 18 orders")
+            st.write("• **Variable**: ₹30/order")
+            st.write("• **Capacity**: 15-20 packages")
+            
+        with pricing_col2:
+            st.markdown("**🛺 Auto Pricing**")
+            st.write("• **Threshold**: >35 orders")
+            st.write("• **Guarantee**: ₹900 for 22 orders")
+            st.write("• **Variable**: ₹40/order")
+            st.write("• **Capacity**: 22-30 packages")
+        
+        with pricing_col3:
+            st.markdown("**📊 Efficiency Metrics**")
+            total_orders_analysis = sum([dp['total_orders'] for dp in last_mile_analysis['delivery_points']])
+            variable_points = sum([1 for dp in last_mile_analysis['delivery_points'] if dp['pricing_model'] == 'Variable'])
+            guarantee_points = len(last_mile_analysis['delivery_points']) - variable_points
+            
+            st.metric("Variable Pricing", f"{variable_points} points")
+            st.metric("Guarantee Pricing", f"{guarantee_points} points")
+            st.metric("Avg Orders/Point", f"{total_orders_analysis/len(last_mile_analysis['delivery_points']):.0f}" if last_mile_analysis['delivery_points'] else "0")
+        
+        # Individual Delivery Point Details
+        if last_mile_analysis['delivery_points']:
+            st.markdown("#### 📋 Individual Delivery Point Analysis")
+            
+            delivery_data = []
+            for dp in last_mile_analysis['delivery_points']:
+                point = dp['point']
+                staff_deliveries_note = " (+ staff)" if dp.get('staff_doing_deliveries', 0) > 0 else ""
+                delivery_data.append({
+                    'Point': f"{point['id']} ({point['type']})",
+                    'Orders': dp['total_orders'],
+                    'Bikes': f"{dp['bikes_needed']}{staff_deliveries_note}",
+                    'Autos': dp['autos_needed'],
+                    'Staff': f"{dp['staff_count']} (₹{dp['staff_cost']:,.0f})",
+                    'Daily Cost': f"₹{dp['total_cost']:,}",
+                    'Pricing Model': dp['pricing_model'],
+                    'Cost/Order': f"₹{dp['total_cost']/dp['total_orders']:.1f}" if dp['total_orders'] > 0 else "₹0"
+                })
+            
+            delivery_df = pd.DataFrame(delivery_data)
+            st.dataframe(delivery_df, use_container_width=True)
+
+    # Detailed First Mile Vehicle Analysis
+    with st.expander("🚚 **Detailed First Mile Clustering Analysis**", expanded=False):
+        st.markdown("#### 🎯 Proximity-Based Clustering Strategy")
+        st.info(f"""
+        **Optimization Approach**: Club nearby pickup locations (within 3km) to maximize vehicle efficiency
+        
+        **Vehicle Assignment Logic**:
+        - **🏍️ Bikes (₹700/day)**: 30-50 orders per pickup cluster
+        - **🛺 Autos (₹900/day)**: 50-70 orders per pickup cluster  
+        - **🚛 Mini Trucks (₹1,400/day)**: 100-200 orders per pickup cluster
+        - **🚚 Large Trucks (₹2,600/day)**: 300-500 orders per pickup cluster
+        
+        **Example**: Herbalife (500 orders) → 1 Large Truck vs Westside + Tata Cliq (30+25 orders) → 1 Bike
+        """)
+        
+        # Show clustering results
+        st.markdown("#### 📊 Current Clustering Results")
+        
+        cluster_col1, cluster_col2 = st.columns(2)
+        
+        with cluster_col1:
+            st.markdown("**📍 Cluster Summary**")
+            st.metric("Original Pickup Locations", f"{total_pickup_locations}")
+            st.metric("Optimized Clusters", f"{total_clusters}")
+            st.metric("Efficiency Gain", f"{((total_pickup_locations - total_clusters) / total_pickup_locations * 100):.1f}%")
+            
+        with cluster_col2:
+            st.markdown("**💰 Cost Efficiency**")
+            naive_cost = total_pickup_locations * 900  # Assume 1 auto per location
+            st.metric("Naive Cost (1 auto/location)", f"₹{naive_cost:,}/day")
+            st.metric("Optimized Cost", f"₹{total_daily_cost:,}/day")
+            savings = naive_cost - total_daily_cost
+            st.metric("Daily Savings", f"₹{savings:,}/day", f"{(savings/naive_cost*100):.1f}% saved")
+        
+        # Fleet breakdown
+        st.markdown("#### 🚛 Fleet Composition & Costs")
+        
+        fleet_col1, fleet_col2, fleet_col3, fleet_col4 = st.columns(4)
+        
+        with fleet_col1:
+            if total_bikes > 0:
+                st.markdown("**🏍️ Bikes**")
+                st.metric("Count", f"{total_bikes}")
+                st.metric("Capacity", f"{bike_daily_capacity:,} orders")
+                st.metric("Daily Cost", f"₹{fleet_summary['bikes']['cost']:,}")
+                st.metric("Cost/Order", f"₹{fleet_summary['bikes']['cost']/bike_daily_capacity:.1f}" if bike_daily_capacity > 0 else "₹0")
+            else:
+                st.markdown("**🏍️ Bikes**")
+                st.write("None required")
+        
+        with fleet_col2:
+            if total_autos > 0:
+                st.markdown("**🛺 Autos**")
+                st.metric("Count", f"{total_autos}")
+                st.metric("Capacity", f"{auto_daily_capacity:,} orders")
+                st.metric("Daily Cost", f"₹{fleet_summary['autos']['cost']:,}")
+                st.metric("Cost/Order", f"₹{fleet_summary['autos']['cost']/auto_daily_capacity:.1f}" if auto_daily_capacity > 0 else "₹0")
+            else:
+                st.markdown("**🛺 Autos**")
+                st.write("None required")
+        
+        with fleet_col3:
+            if total_minitrucks > 0:
+                st.markdown("**🚛 Mini Trucks**")
+                st.metric("Count", f"{total_minitrucks}")
+                st.metric("Capacity", f"{truck_daily_capacity:,} orders")
+                st.metric("Daily Cost", f"₹{fleet_summary['minitrucks']['cost']:,}")
+                st.metric("Cost/Order", f"₹{fleet_summary['minitrucks']['cost']/truck_daily_capacity:.1f}" if truck_daily_capacity > 0 else "₹0")
+            else:
+                st.markdown("**🚛 Mini Trucks**")
+                st.write("None required")
+        
+        with fleet_col4:
+            if total_large_trucks > 0:
+                st.markdown("**🚚 Large Trucks**")
+                st.metric("Count", f"{total_large_trucks}")
+                st.metric("Capacity", f"{large_truck_daily_capacity:,} orders")
+                st.metric("Daily Cost", f"₹{fleet_summary['large_trucks']['cost']:,}")
+                st.metric("Cost/Order", f"₹{fleet_summary['large_trucks']['cost']/large_truck_daily_capacity:.1f}" if large_truck_daily_capacity > 0 else "₹0")
+            else:
+                st.markdown("**🚚 Large Trucks**")
+                st.write("None required")
+        
+        # Show individual cluster assignments
+        if len(fleet_summary['assignments']) > 0:
+            st.markdown("#### 📋 Detailed Cluster Assignments")
+            
+            assignments_data = []
+            for i, assignment in enumerate(fleet_summary['assignments']):
+                cluster = assignment['cluster']
+                main_hub = cluster['main_hub']['pickup']
+                additional_count = len(cluster['additional_hubs'])
+                
+                cluster_name = f"{main_hub}"
+                if additional_count > 0:
+                    cluster_name += f" + {additional_count} others"
+                
+                assignments_data.append({
+                    'Cluster': cluster_name,
+                    'Total Orders': cluster['total_orders'],
+                    'Vehicle': assignment['vehicle_type'].replace('_', ' ').title(),
+                    'Daily Cost': f"₹{assignment['daily_cost']:,}",
+                    'Cost/Order': f"₹{assignment['cost_per_order']:.1f}",
+                    'Utilization': f"{assignment['utilization']:.1f}%"
+                })
+            
+            assignments_df = pd.DataFrame(assignments_data)
+            st.dataframe(assignments_df, use_container_width=True)
+
     # Add warehouse rental costs and capacity details prominently
     st.markdown("### 🏭 Warehouse Specifications & Rental Costs")
     
@@ -1549,7 +2616,7 @@ def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_wa
     
     # Add comprehensive cost breakdown mixing warehouse rental + all mile costs
     st.markdown("---")
-    st.markdown("### 🏢 COMPREHENSIVE COST BREAKDOWN: Warehouse Rent + Transportation")
+    st.markdown("### 🏢 COMPREHENSIVE COST BREAKDOWN: Warehouse Rent + Transportation + People Costs")
     
     # Calculate warehouse rental costs
     main_warehouses_count = len(big_warehouses)
@@ -1565,13 +2632,16 @@ def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_wa
     monthly_last_mile = daily_last_mile * 30
     total_transportation = monthly_first_mile + monthly_middle_mile + monthly_last_mile
     
+    # People costs (monthly) - get from last mile analysis
+    total_monthly_people_cost = last_mile_analysis['total_monthly_staff_cost']
+    
     # Grand total
-    grand_total_monthly = total_warehouse_rent + total_transportation
+    grand_total_monthly = total_warehouse_rent + total_transportation + total_monthly_people_cost
     grand_total_daily = grand_total_monthly / 30
     grand_total_cpo = grand_total_daily / current_orders if current_orders > 0 else 0
     
     # Create comprehensive breakdown
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     
     with col1:
         st.markdown("#### 🏢 Warehouse Infrastructure Costs")
@@ -1593,13 +2663,28 @@ def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_wa
         # Transportation cost per order
         transport_cpo = (total_transportation / 30) / current_orders if current_orders > 0 else 0
         st.write(f"**Transport CPO:** ₹{transport_cpo:.1f}")
+        
+    with col3:
+        st.markdown("#### 👥 People Costs")
+        
+        # Calculate individual people costs
+        main_hub_staff_monthly = main_warehouses_count * 2 * 30000  # 2 people per hub at ₹30k each
+        aux_staff_monthly = auxiliary_warehouses_count * 1 * 15000  # 1 person per aux at ₹15k
+        
+        st.metric("Main Hub Staff", f"₹{main_hub_staff_monthly:,.0f}/month", f"{main_warehouses_count * 2} people @ ₹30k")
+        st.metric("Auxiliary Staff", f"₹{aux_staff_monthly:,.0f}/month", f"{auxiliary_warehouses_count} people @ ₹15k")
+        st.metric("Total People Cost", f"₹{total_monthly_people_cost:,.0f}/month", f"Fixed Staff Cost")
+        
+        # People cost per order
+        people_cpo = (total_monthly_people_cost / 30) / current_orders if current_orders > 0 else 0
+        st.write(f"**People CPO:** ₹{people_cpo:.1f}")
     
     # Grand total summary
     st.markdown("#### 💰 GRAND TOTAL: Complete Network Operating Cost")
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Monthly Total", f"₹{grand_total_monthly:,.0f}", f"Rent + Transport")
+        st.metric("Monthly Total", f"₹{grand_total_monthly:,.0f}", f"Rent + Transport + People")
     with col2:
         st.metric("Daily Total", f"₹{grand_total_daily:,.0f}", f"All-in Operating Cost")
     with col3:
@@ -1617,11 +2702,13 @@ def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_wa
     with col1:
         st.markdown("**Monthly Cost Distribution:**")
         warehouse_pct = (total_warehouse_rent / grand_total_monthly) * 100
+        people_pct = (total_monthly_people_cost / grand_total_monthly) * 100
         first_mile_pct = (monthly_first_mile / grand_total_monthly) * 100
         middle_mile_pct = (monthly_middle_mile / grand_total_monthly) * 100
         last_mile_pct = (monthly_last_mile / grand_total_monthly) * 100
         
         st.write(f"🏢 Warehouse Rent: {warehouse_pct:.1f}% (₹{total_warehouse_rent:,.0f})")
+        st.write(f"👥 People Costs: {people_pct:.1f}% (₹{total_monthly_people_cost:,.0f})")
         st.write(f"🚚 First Mile: {first_mile_pct:.1f}% (₹{monthly_first_mile:,.0f})")
         st.write(f"🔄 Middle Mile: {middle_mile_pct:.1f}% (₹{monthly_middle_mile:,.0f})")
         st.write(f"🏠 Last Mile: {last_mile_pct:.1f}% (₹{monthly_last_mile:,.0f})")
@@ -1687,8 +2774,6 @@ def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_wa
     bottleneck_util = (current_orders / network_bottleneck * 100) if network_bottleneck > 0 else 0
     
     # Create comprehensive summary table
-    import pandas as pd
-    
     summary_data = {
         'Network Component': [
             '🏢 Main Warehouses',
@@ -1788,6 +2873,7 @@ def show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_wa
         st.write(f"• Fixed Costs: {warehouse_percentage:.0f}% (₹{total_warehouse_rent:,.0f})")
         st.write(f"• Variable Costs: {100-warehouse_percentage:.0f}% (₹{total_transportation:,.0f})")
         st.write(f"• Infrastructure: {main_warehouses_count + auxiliary_warehouses_count} warehouses")
+    
     
     return  # Return after showing ultimate comprehensive analysis
     

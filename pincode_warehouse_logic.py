@@ -106,7 +106,7 @@ def analyze_order_density_by_pincode(df_filtered, pincode_boundaries):
     
     return pincode_analysis
 
-def select_optimal_pincode_feeders(pincode_analysis, min_orders_per_feeder=50, max_feeders=20):
+def select_optimal_pincode_feeders(pincode_analysis, min_orders_per_feeder=50, max_feeders=8):
     """Select optimal pincodes for feeder warehouse placement"""
     
     # Sort pincodes by order density and count
@@ -203,7 +203,7 @@ def assign_feeders_to_hubs(selected_feeders, big_warehouses, max_distance_km=10)
     
     return feeder_assignments
 
-def create_pincode_based_network(df_filtered, big_warehouses, min_orders_per_feeder=50, max_distance_from_hub=10):
+def create_pincode_based_network(df_filtered, big_warehouses, min_orders_per_feeder=50, max_distance_from_hub=10, delivery_radius=3):
     """Create complete pincode-based feeder network"""
     
     print("🗺️ Creating pincode-based feeder network...")
@@ -219,12 +219,21 @@ def create_pincode_based_network(df_filtered, big_warehouses, min_orders_per_fee
     
     print(f"📍 Found orders in {len(pincode_analysis)} pincodes")
     
+    # Calculate max_feeders based on delivery radius
+    # Smaller radius = more warehouses needed for coverage
+    if delivery_radius <= 2:
+        max_feeders = 35  # Dense network for 2km radius
+    elif delivery_radius <= 3:
+        max_feeders = 25  # Balanced network for 3km radius
+    else:  # 5km radius
+        max_feeders = 15  # Wider coverage for 5km radius
+    
     # Select optimal pincode areas for feeders
     print("🎯 Selecting optimal feeder locations...")
     selected_feeders = select_optimal_pincode_feeders(
         pincode_analysis, 
         min_orders_per_feeder=min_orders_per_feeder,
-        max_feeders=25
+        max_feeders=max_feeders
     )
     
     print(f"✅ Selected {len(selected_feeders)} pincode areas for feeders")

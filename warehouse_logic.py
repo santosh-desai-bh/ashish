@@ -163,7 +163,7 @@ def create_pincode_based_feeder_network(df_filtered, big_warehouses, min_cluster
         
         # Use the pincode-based network creation
         feeder_assignments, density_clusters = create_pincode_based_network(
-            df_filtered, big_warehouses, min_cluster_size, max_distance_from_big
+            df_filtered, big_warehouses, min_cluster_size, max_distance_from_big, delivery_radius
         )
         
         # Convert to the expected format for compatibility
@@ -364,12 +364,12 @@ def determine_optimal_date_range(daily_summary, max_orders=5000):
     return optimal_days
 
 def calculate_big_warehouse_locations(df_filtered):
-    """Calculate optimal locations for big warehouses (IF Hubs) with minimum 4-5 hubs"""
+    """Calculate optimal locations for big warehouses (IF Hubs) with minimum 3 hubs for optimal utilization"""
     try:
         total_orders = len(df_filtered)
         
-        # Ensure minimum 4-5 big warehouses for proper first mile coverage
-        big_warehouse_count = max(5, total_orders // 400)  # Minimum 5 hubs, 400 orders per hub
+        # Ensure minimum 3 big warehouses for proper first mile coverage with higher utilization
+        big_warehouse_count = max(3, total_orders // 600)  # Minimum 3 hubs, 600 orders per hub
         big_warehouse_count = min(big_warehouse_count, 8)  # Cap at 8 for Bangalore
         
         # Use geographic distribution for warehouse placement - prioritize city center areas
