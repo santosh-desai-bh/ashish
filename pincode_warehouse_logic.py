@@ -203,10 +203,20 @@ def assign_feeders_to_hubs(selected_feeders, big_warehouses, max_distance_km=10)
     
     return feeder_assignments
 
-def create_pincode_based_network(df_filtered, big_warehouses, min_orders_per_feeder=50, max_distance_from_hub=10, delivery_radius=3):
+def create_pincode_based_network(df_filtered, big_warehouses, max_distance_from_hub=10, delivery_radius=3):
     """Create complete pincode-based feeder network"""
     
     print("🗺️ Creating pincode-based feeder network...")
+    
+    # Set dynamic min_orders_per_feeder based on delivery_radius (like grid system)
+    if delivery_radius <= 2:
+        min_orders_per_feeder = 80
+    elif delivery_radius <= 3:
+        min_orders_per_feeder = 100
+    elif delivery_radius <= 5:
+        min_orders_per_feeder = 150
+    else:
+        min_orders_per_feeder = 200
     
     # Load pincode boundaries
     pincode_boundaries = load_pincode_boundaries()

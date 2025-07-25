@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from pincode_warehouse_logic import create_pincode_based_network
 
 def find_order_density_clusters(df_filtered, min_cluster_size=30, grid_size=0.005):
     """Find high-density order clusters for feeder warehouse placement"""
@@ -192,63 +193,113 @@ def create_pincode_based_feeder_network(df_filtered, big_warehouses, min_cluster
     except Exception as e:
         print(f"❌ Pincode system failed: {e}. Falling back to grid system.")
         # Fallback to grid system if pincode system fails
-        return create_grid_based_feeder_network(df_filtered, big_warehouses, min_cluster_size, max_distance_from_big, delivery_radius)
+        return create_grid_based_feeder_network(df_filtered, big_warehouses, max_distance_from_big, delivery_radius)
 
-def create_grid_based_feeder_network(df_filtered, big_warehouses, min_cluster_size, max_distance_from_big, delivery_radius):
-    """Create minimal feeder network (2-3 auxiliaries) to reduce middle mile costs"""
+def create_grid_based_feeder_network(df_filtered, big_warehouses, max_distance_from_big, delivery_radius):
+    """Create minimal feeder network using DBSCAN clustering for natural order density areas"""
     
-    # Aggressively minimize auxiliary warehouses for cost efficiency
+    print(f"🧬 Creating DBSCAN-based auxiliary network (radius: {delivery_radius}km)")
+    
+    # Use DBSCAN clustering instead of grid-based approach
+    from dbscan_warehouse_logic import create_dbscan_auxiliary_network
+    
+    try:
+        # Create auxiliaries using DBSCAN clustering
+        feeder_warehouses, density_clusters = create_dbscan_auxiliary_network(
+            df_filtered, big_warehouses, delivery_radius
+        )
+        
+        # Convert DBSCAN auxiliaries to match expected format
+        converted_feeders = []
+        for aux in feeder_warehouses:
+            converted_feeders.append({
+                'id': aux['id'],
+                'lat': aux['lat'],
+                'lon': aux['lon'],
+                'orders': aux['orders'],
+                'capacity': aux['capacity'],
+                'size_category': aux['size_category'],
+                'parent': aux['parent'],
+                'distance_to_parent': aux['distance_to_parent'],
+                'density_score': aux['density_score'],
+                'type': 'auxiliary',  # Changed from 'feeder' to 'auxiliary'
+                'delivery_radius': aux['delivery_radius'],
+                'method': 'DBSCAN',
+                'pincode': aux.get('pincode', 'UNKNOWN'),  # Include pincode for coverage areas
+                'area_name': aux.get('area_name', 'Unknown Area')
+            })
+        
+        print(f"✅ Created {len(converted_feeders)} DBSCAN-based auxiliaries")
+        return converted_feeders, density_clusters
+        
+    except Exception as e:
+        print(f"❌ DBSCAN failed: {e}. Falling back to grid system.")
+        # Fallback to original grid logic if DBSCAN fails
+        return create_original_grid_system(df_filtered, big_warehouses, max_distance_from_big, delivery_radius)
+
+def create_original_grid_system(df_filtered, big_warehouses, max_distance_from_big, delivery_radius):
+    """Original grid-based system as fallback"""
+    
+    # Auxiliary warehouse count inversely proportional to delivery radius
     if delivery_radius <= 2:
-        grid_size = 0.025  # Very large grid to minimize auxiliaries
-        min_gap_orders = 100  # High threshold for auxiliary placement
-        feeder_separation = 8.0  # Large separation
-        max_auxiliaries = 2  # Limit to 2 auxiliaries
+        grid_size = 0.015
+        min_gap_orders = 80
+        feeder_separation = 6.0
+        max_auxiliaries = 6
     elif delivery_radius <= 3:
-        grid_size = 0.030  # Even larger grid
-        min_gap_orders = 120
-        feeder_separation = 10.0  # Very large separation
-        max_auxiliaries = 3  # Limit to 3 auxiliaries
+        grid_size = 0.020
+        min_gap_orders = 100
+        feeder_separation = 8.0
+        max_auxiliaries = 4
     elif delivery_radius <= 5:
-        grid_size = 0.035  # Massive grid for minimal auxiliaries
+        grid_size = 0.030
         min_gap_orders = 150
-        feeder_separation = 12.0  # Massive separation
-        max_auxiliaries = 2  # Keep minimal
+        feeder_separation = 12.0
+        max_auxiliaries = 2
     else:
-        grid_size = 0.040  # Huge grid
+        grid_size = 0.040
         min_gap_orders = 200
-        feeder_separation = 15.0  # Huge separation
-        max_auxiliaries = 2  # Minimal auxiliaries
+        feeder_separation = 15.0
+        max_auxiliaries = 1
     
-    # Step 1: Find only the highest density clusters for minimal auxiliaries
-    density_clusters = find_order_density_clusters(df_filtered, min_cluster_size, grid_size)
+    # Step 1: Find density clusters using dynamic threshold based on delivery radius
+    dynamic_cluster_size = min_gap_orders
+    density_clusters = find_order_density_clusters(df_filtered, dynamic_cluster_size, grid_size)
     
     # Limit to only top density clusters to minimize auxiliary count
-    density_clusters = density_clusters[:max_auxiliaries * 2]  # Only consider top clusters
+    density_clusters = density_clusters[:max_auxiliaries * 2]
     
     feeder_warehouses = place_feeder_warehouses_near_clusters(
         density_clusters, big_warehouses, max_distance_from_big, delivery_radius, feeder_separation
     )
     
-    # Hard limit auxiliary count for cost control
+    # Apply proportional auxiliary limit based on delivery radius
     feeder_warehouses = feeder_warehouses[:max_auxiliaries]
     
-    # Step 2: Find uncovered orders (more than delivery_radius from any feeder)
+    # Step 2: Find orders not covered by main warehouses OR existing auxiliaries
     uncovered_orders = []
     for _, order in df_filtered.iterrows():
         order_lat, order_lon = order['order_lat'], order['order_long']
         
-        # Check distance to all feeders
-        min_distance_to_feeder = float('inf')
+        # Check distance to main warehouses first (they handle last mile too)
+        min_distance_to_main = float('inf')
+        for main_wh in big_warehouses:
+            distance = ((order_lat - main_wh['lat'])**2 + (order_lon - main_wh['lon'])**2)**0.5 * 111
+            min_distance_to_main = min(min_distance_to_main, distance)
+        
+        # Check distance to existing auxiliary warehouses
+        min_distance_to_aux = float('inf')
         for feeder in feeder_warehouses:
             distance = ((order_lat - feeder['lat'])**2 + (order_lon - feeder['lon'])**2)**0.5 * 111
-            min_distance_to_feeder = min(min_distance_to_feeder, distance)
+            min_distance_to_aux = min(min_distance_to_aux, distance)
         
-        # If more than delivery_radius from nearest feeder, mark as uncovered
-        if min_distance_to_feeder > delivery_radius:
+        # If more than delivery_radius from BOTH main and auxiliary warehouses, mark as uncovered
+        if min_distance_to_main > delivery_radius and min_distance_to_aux > delivery_radius:
             uncovered_orders.append({
                 'lat': order_lat,
                 'lon': order_lon,
-                'distance_to_nearest_feeder': min_distance_to_feeder
+                'distance_to_nearest_main': min_distance_to_main,
+                'distance_to_nearest_aux': min_distance_to_aux
             })
     
     # Step 3: Create additional feeders for uncovered areas
@@ -298,7 +349,17 @@ def create_grid_based_feeder_network(df_filtered, big_warehouses, min_cluster_si
                             nearest_big_warehouse = big_wh
                     
                     # Only place if within distance limit and not too close to existing feeders
-                    if min_distance_to_big <= max_distance_from_big:
+                    # Check if this area is already well-covered by main warehouses
+                    # Coverage buffer adjusts with delivery radius
+                    main_warehouse_coverage = False
+                    coverage_buffer = delivery_radius * 1.1  # 10% buffer, scales with radius
+                    for main_wh in big_warehouses:
+                        distance_to_main = ((cell_center_lat - main_wh['lat'])**2 + (cell_center_lon - main_wh['lon'])**2)**0.5 * 111
+                        if distance_to_main <= coverage_buffer:
+                            main_warehouse_coverage = True
+                            break
+                    
+                    if min_distance_to_big <= max_distance_from_big and not main_warehouse_coverage:
                         too_close = False
                         all_feeders = feeder_warehouses + additional_feeders
                         
@@ -339,8 +400,11 @@ def create_grid_based_feeder_network(df_filtered, big_warehouses, min_cluster_si
                             })
                             aux_id_counter += 1
     
-    # Combine all feeders
+    # Combine all feeders and apply final limit
     all_feeders = feeder_warehouses + additional_feeders
+    
+    # Apply final limit to total auxiliary count (respecting delivery radius scaling)
+    all_feeders = all_feeders[:max_auxiliaries]
     
     # Add delivery radius info to all feeders
     for feeder in all_feeders:
@@ -348,15 +412,12 @@ def create_grid_based_feeder_network(df_filtered, big_warehouses, min_cluster_si
     
     return all_feeders, density_clusters
 
-def create_comprehensive_feeder_network(df_filtered, big_warehouses, min_cluster_size=20, max_distance_from_big=8.0, delivery_radius=2.0):
-    """Create a comprehensive feeder network using pincode-based clustering to minimize overlaps"""
+def create_comprehensive_feeder_network(df_filtered, big_warehouses, max_distance_from_big=8.0, delivery_radius=2.0):
+    """Create a comprehensive feeder network using DBSCAN clustering for coverage-first approach"""
     
-    # Try pincode-based clustering first if postcode data is available
-    if 'postcode' in df_filtered.columns:
-        return create_pincode_based_feeder_network(df_filtered, big_warehouses, min_cluster_size, max_distance_from_big, delivery_radius)
-    
-    # Fallback to optimized grid system with minimal overlaps
-    return create_grid_based_feeder_network(df_filtered, big_warehouses, min_cluster_size, max_distance_from_big, delivery_radius)
+    # REMOVED: Pincode-based system - force use of DBSCAN for better coverage
+    # Always use DBSCAN clustering for coverage-first auxiliary placement
+    return create_grid_based_feeder_network(df_filtered, big_warehouses, max_distance_from_big, delivery_radius)
 
 def determine_optimal_date_range(daily_summary, max_orders=5000):
     """Determine optimal date range for performance"""

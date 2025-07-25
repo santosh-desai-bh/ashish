@@ -68,7 +68,7 @@ def generate_geographic_hub_name(hub_lat, hub_lon, df_filtered, hub_id):
     
     return primary
 
-def create_warehouse_network(df_filtered, m, min_cluster_size, max_distance_from_big, delivery_radius=2, show_coverage_circles=False, target_capacity=None):
+def create_warehouse_network(df_filtered, m, max_distance_from_big, delivery_radius=2, show_coverage_circles=False, target_capacity=None):
     """Create the complete warehouse network on the map"""
     
     # Calculate big warehouse locations
@@ -102,6 +102,7 @@ def create_warehouse_network(df_filtered, m, min_cluster_size, max_distance_from
     # Create separate layers for hubs and auxiliaries (we'll update count later)
     hub_layer = folium.FeatureGroup(name=f"🏭 Main Warehouses ({big_warehouse_count})")
     auxiliary_warehouse_layer = folium.FeatureGroup(name="📦 Auxiliary Warehouses")
+    coverage_layer = folium.FeatureGroup(name="📍 Warehouse Coverage Areas", show=False)
     
     big_warehouses = []
     
@@ -129,27 +130,16 @@ def create_warehouse_network(df_filtered, m, min_cluster_size, max_distance_from
             'type': 'hub'
         })
         
-        # Add hub warehouse marker with capacity color coding
-        hub_capacity_utilization = (orders_served/hub_capacity)*100 if hub_capacity > 0 else 0
+        # Create simple hub popup without vehicle count (will be updated later)
+        hub_popup = f"<b>{hub_code} Main Hub</b><br>📍 Geographic Zone: {hub_code}<br>⚡ Daily Capacity: {hub_capacity} orders<br>📊 Current Orders: {orders_served}<br>🔄 Role: Primary sorting & auxiliary coordination"
         
-        # Use realistic main microwarehouse specifications
-        from analytics import WAREHOUSE_SPECS
-        main_wh_specs = WAREHOUSE_SPECS['main_microwarehouse']
-        estimated_sqft = main_wh_specs['avg_size_sqft']  # Use standard 850 sqft
-        estimated_rent = main_wh_specs['avg_monthly_rent']  # Use realistic ₹35k/month
-        
-        # Get capacity color
-        capacity_color, capacity_label = get_capacity_color(hub_capacity_utilization)
-        
-        hub_popup = f"<b>{hub_code} Main Hub</b><br>📍 Geographic Zone: {hub_code}<br>🏢 Type: Main Microwarehouse ({main_wh_specs['size_range_sqft'][0]}-{main_wh_specs['size_range_sqft'][1]} sqft)<br>🏗️ Size: ~{estimated_sqft:,} sqft<br>⚡ Daily Capacity: {hub_capacity} orders<br>📊 Current Orders: {orders_served}<br>📈 Utilization: {hub_capacity_utilization:.1f}% ({capacity_label})<br>🎯 Coverage: 8km radius<br>💰 Monthly Rent: ₹{estimated_rent:,} ({main_wh_specs['monthly_rent_range'][0]:,}-{main_wh_specs['monthly_rent_range'][1]:,} range)<br>🔄 Role: Primary sorting & auxiliary coordination"
-        
-        # Create custom icon with capacity color
+        # Create simple icon without utilization color coding
         folium.Marker(
             location=[lat, lon],
             popup=hub_popup,
-            tooltip=f"🏭 {hub_code} Main | {capacity_label} utilized",
+            tooltip=f"🏭 {hub_code} Main Hub",
             icon=folium.DivIcon(
-                html=f'<div style="background-color: {capacity_color}; border: 2px solid #000; border-radius: 50%; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;"><i class="fa fa-industry" style="color: white; font-size: 14px;"></i></div>',
+                html=f'<div style="background-color: #4169E1; border: 2px solid #000; border-radius: 50%; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;"><i class="fa fa-industry" style="color: white; font-size: 14px;"></i></div>',
                 icon_size=(30, 30),
                 icon_anchor=(15, 15)
             )
@@ -157,23 +147,12 @@ def create_warehouse_network(df_filtered, m, min_cluster_size, max_distance_from
         
         # Remove the separate capacity indicator - info is available in popup/tooltip
         
-        # Add coverage circle for hub warehouse (only if enabled)
-        if show_coverage_circles:
-            folium.Circle(
-                location=[lat, lon],
-                radius=8000,
-                popup=f"Blowhorn IF Hub {i+1} Primary Coverage",
-                color='red',
-                weight=1,
-                fill=True,
-                fillColor='red',
-                fillOpacity=0.05
-            ).add_to(hub_layer)
+        # Coverage circles removed - network connections show relationships
     
     # Create pincode-based feeder network (no overlaps!) - always use grid-based for reliability
     # Always use grid-based system but with optimized parameters to reduce overlaps
     feeder_warehouses, density_clusters = create_comprehensive_feeder_network(
-        df_filtered, big_warehouses, min_cluster_size, max_distance_from_big, delivery_radius
+        df_filtered, big_warehouses, max_distance_from_big, delivery_radius
     )
     using_pincode_system = False  # Use grid system but optimize for minimal overlaps
     
@@ -200,24 +179,16 @@ def create_warehouse_network(df_filtered, m, min_cluster_size, max_distance_from
         from analytics import HUB_COLORS
         icon_color = HUB_COLORS.get(hub_code, 'lightred')
         
-        # Create auxiliary popup text with realistic sizing based on specifications
-        aux_wh_specs = WAREHOUSE_SPECS['auxiliary_warehouse']
-        estimated_aux_sqft = aux_wh_specs['avg_size_sqft']  # Use standard 350 sqft
-        rent_amount = aux_wh_specs['avg_monthly_rent']  # Use realistic ₹15k/month
-        vehicle_assigned = feeder_wh.get('vehicle_assigned', 'Mini Truck')
-        capacity_utilization = (orders_within_radius / feeder_wh['capacity']) * 100 if feeder_wh['capacity'] > 0 else 0
-        aux_popup = f"<b>{aux_name} Auxiliary Hub</b><br>📍 Parent Hub: {hub_code}<br>📦 Type: Auxiliary Warehouse ({aux_wh_specs['size_range_sqft'][0]}-{aux_wh_specs['size_range_sqft'][1]} sqft)<br>🏢 Size: ~{estimated_aux_sqft:,} sqft<br>⚡ Daily Capacity: {feeder_wh['capacity']} orders<br>📊 Current Orders: {orders_within_radius}<br>📈 Utilization: {capacity_utilization:.1f}%<br>🛣️ Distance to Hub: {feeder_wh['distance_to_parent']:.1f}km<br>🚛 Vehicle: {vehicle_assigned}<br>💰 Monthly Rent: ₹{rent_amount:,} ({aux_wh_specs['monthly_rent_range'][0]:,}-{aux_wh_specs['monthly_rent_range'][1]:,} range)"
+        # Create simple auxiliary popup without vehicle count (will be updated later)
+        aux_popup = f"<b>{aux_name} Auxiliary Hub</b><br>📍 Parent Hub: {hub_code}<br>📊 Current Orders: {orders_within_radius}<br>⚡ Daily Capacity: {feeder_wh['capacity']} orders"
         
-        # Get capacity color for auxiliary warehouse
-        aux_capacity_color, aux_capacity_label = get_capacity_color(capacity_utilization)
-        
-        # Add auxiliary warehouse icon with capacity color coding
+        # Add auxiliary warehouse icon without utilization color coding
         folium.Marker(
             location=[feeder_wh['lat'], feeder_wh['lon']],
             popup=aux_popup,
-            tooltip=f"📦 {aux_name} | {aux_capacity_label} utilized",
+            tooltip=f"📦 {aux_name} Auxiliary",
             icon=folium.DivIcon(
-                html=f'<div style="background-color: {aux_capacity_color}; border: 2px solid #000; border-radius: 3px; width: 25px; height: 25px; display: flex; align-items: center; justify-content: center;"><i class="fa fa-warehouse" style="color: white; font-size: 12px;"></i></div>',
+                html=f'<div style="background-color: #FF6347; border: 2px solid #000; border-radius: 3px; width: 25px; height: 25px; display: flex; align-items: center; justify-content: center;"><i class="fa fa-warehouse" style="color: white; font-size: 12px;"></i></div>',
                 icon_size=(25, 25),
                 icon_anchor=(12, 12)
             )
@@ -229,39 +200,21 @@ def create_warehouse_network(df_filtered, m, min_cluster_size, max_distance_from
             # Extract hub code to avoid nested f-string issues
             parent_hub_code = parent_hub.get('hub_code', f"HUB{parent_hub['id']}")
             
-            # Calculate route capacity utilization (based on auxiliary capacity)
-            route_capacity_util = capacity_utilization
-            route_color, route_capacity_label = get_capacity_color(route_capacity_util)
-            
+            # Simple connection line without utilization color coding
             folium.PolyLine(
                 locations=[
                     [parent_hub['lat'], parent_hub['lon']],
                     [feeder_wh['lat'], feeder_wh['lon']]
                 ],
-                color=route_color,
-                weight=3,
-                opacity=0.8,
+                color='#666666',  # Simple gray color
+                weight=2,
+                opacity=0.6,
                 dash_array='5, 5',
-                popup=f"Hub-Auxiliary Route: {parent_hub_code} → {aux_name}<br>Distance: {feeder_wh['distance_to_parent']:.1f}km<br>Route Capacity: {feeder_wh['capacity']} orders/day<br>Current Flow: {orders_within_radius} orders<br>Utilization: {route_capacity_util:.1f}% ({route_capacity_label})",
-                tooltip=f"🔗 {parent_hub_code} → {aux_name} | {route_capacity_label} utilized"
+                popup=f"Hub-Auxiliary Route: {parent_hub_code} → {aux_name}<br>Distance: {feeder_wh['distance_to_parent']:.1f}km<br>Route Capacity: {feeder_wh['capacity']} orders/day<br>Current Flow: {orders_within_radius} orders",
+                tooltip=f"🔗 {parent_hub_code} → {aux_name}"
             ).add_to(auxiliary_warehouse_layer)
         
-        # Add delivery radius coverage circle (only if enabled)
-        if show_coverage_circles:
-            radius_meters = delivery_radius * 1000
-            circle_color = 'orange' if delivery_radius <= 3 else 'yellow' if delivery_radius <= 5 else 'red'
-            
-            folium.Circle(
-                location=[feeder_wh['lat'], feeder_wh['lon']],
-                radius=radius_meters,
-                popup=f"Auxiliary {feeder_wh['id']} - {delivery_radius}km Delivery Zone<br>{orders_within_radius} orders within range",
-                tooltip=f"{delivery_radius}km delivery zone - {orders_within_radius} orders",
-                color=circle_color,
-                weight=1,
-                fill=True,
-                fillColor=circle_color,
-                fillOpacity=0.08
-            ).add_to(auxiliary_warehouse_layer)
+        # Coverage circles removed - replaced with connection lines
     
     # Update auxiliary layer name with actual count and add both layers to the map
     auxiliary_count = len(feeder_warehouses)
@@ -270,29 +223,130 @@ def create_warehouse_network(df_filtered, m, min_cluster_size, max_distance_from
     hub_layer.add_to(m)
     auxiliary_warehouse_layer.add_to(m)
     
-    # Calculate coverage statistics
+    # Add auxiliary-to-main hub connection lines
+    add_auxiliary_hub_connections(m, feeder_warehouses, big_warehouses)
+    
+    # Add optional interhub connections
+    add_interhub_connections(m, big_warehouses)
+    
+    # Calculate tiered coverage statistics (2km, 3km, 5km, >5km)
     total_orders = len(df_filtered)
-    covered_orders = 0
+    coverage_tiers = {
+        '2km': 0,
+        '3km': 0, 
+        '5km': 0,
+        '>5km': 0
+    }
     
     for _, order in df_filtered.iterrows():
         order_lat, order_lon = order['order_lat'], order['order_long']
         
-        # Check if within delivery_radius of any feeder
-        within_radius = False
-        for feeder in feeder_warehouses:
-            distance = ((order_lat - feeder['lat'])**2 + (order_lon - feeder['lon'])**2)**0.5 * 111
-            if distance <= delivery_radius:
-                within_radius = True
+        # Find minimum distance to any warehouse (main or auxiliary)
+        min_distance = float('inf')
+        
+        # Check distance to main warehouses
+        for main_wh in big_warehouses:
+            distance = ((order_lat - main_wh['lat'])**2 + (order_lon - main_wh['lon'])**2)**0.5 * 111
+            min_distance = min(min_distance, distance)
+        
+        # Check distance to auxiliary warehouses
+        for aux_wh in feeder_warehouses:
+            distance = ((order_lat - aux_wh['lat'])**2 + (order_lon - aux_wh['lon'])**2)**0.5 * 111
+            min_distance = min(min_distance, distance)
+        
+        # Categorize by closest warehouse distance
+        if min_distance <= 2:
+            coverage_tiers['2km'] += 1
+        elif min_distance <= 3:
+            coverage_tiers['3km'] += 1
+        elif min_distance <= 5:
+            coverage_tiers['5km'] += 1
+        else:
+            coverage_tiers['>5km'] += 1
+    
+    # Store coverage analysis for use in main.py
+    coverage_analysis = {
+        'total_orders': total_orders,
+        'tiers': coverage_tiers,
+        'percentages': {tier: (count / total_orders) * 100 if total_orders > 0 else 0 
+                      for tier, count in coverage_tiers.items()}
+    }
+    
+    print(f"Tiered Coverage Analysis:")
+    print(f"  ≤2km: {coverage_tiers['2km']} orders ({coverage_analysis['percentages']['2km']:.1f}%)")
+    print(f"  ≤3km: {coverage_tiers['3km']} orders ({coverage_analysis['percentages']['3km']:.1f}%)")
+    print(f"  ≤5km: {coverage_tiers['5km']} orders ({coverage_analysis['percentages']['5km']:.1f}%)")
+    print(f"  >5km: {coverage_tiers['>5km']} orders ({coverage_analysis['percentages']['>5km']:.1f}%)")
+    
+    return big_warehouses, feeder_warehouses, density_clusters, coverage_analysis
+
+def update_warehouse_markers_with_vehicles(m, big_warehouses, feeder_warehouses, last_mile_assignments):
+    """Update warehouse markers to show last mile vehicle counts instead of utilization"""
+    
+    # Create a new layer for updated warehouse markers with vehicle info
+    updated_hub_layer = folium.FeatureGroup(name=f"🏭 Main Warehouses with Vehicles ({len(big_warehouses)})")
+    updated_aux_layer = folium.FeatureGroup(name=f"📦 Auxiliary Warehouses with Vehicles ({len(feeder_warehouses)})")
+    
+    # Update main hub markers
+    for hub in big_warehouses:
+        hub_vehicles = {'autos': 0, 'bikes': 0}
+        
+        # Calculate vehicles for this hub (from its auxiliaries)
+        for assignment in last_mile_assignments:
+            aux_info = next((aux for aux in feeder_warehouses if aux.get('id') == assignment.get('auxiliary_id')), None)
+            if aux_info and aux_info.get('parent') == hub['id']:
+                hub_vehicles['autos'] += assignment.get('auto_vehicles', 0)
+                hub_vehicles['bikes'] += assignment.get('bike_vehicles', 0)
+        
+        total_hub_vehicles = hub_vehicles['autos'] + hub_vehicles['bikes']
+        hub_code = hub.get('hub_code', f"HUB{hub['id']}")
+        
+        # Updated popup with vehicle information
+        hub_popup = f"<b>{hub_code} Main Hub</b><br>📍 Geographic Zone: {hub_code}<br>⚡ Daily Capacity: {hub['capacity']} orders<br>📊 Current Orders: {hub['orders']}<br>🚛 LM Vehicles: {total_hub_vehicles} ({hub_vehicles['autos']}🛺 + {hub_vehicles['bikes']}🏍️)<br>🔄 Can deliver directly from hub"
+        
+        folium.Marker(
+            location=[hub['lat'], hub['lon']],
+            popup=hub_popup,
+            tooltip=f"🏭 {hub_code} | {total_hub_vehicles} vehicles",
+            icon=folium.DivIcon(
+                html=f'<div style="background-color: #4169E1; border: 2px solid #000; border-radius: 50%; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; position: relative;"><i class="fa fa-industry" style="color: white; font-size: 14px;"></i><span style="position: absolute; top: -8px; right: -8px; background: #FFD700; color: black; border-radius: 50%; width: 16px; height: 16px; font-size: 10px; font-weight: bold; display: flex; align-items: center; justify-content: center;">{total_hub_vehicles}</span></div>',
+                icon_size=(30, 30),
+                icon_anchor=(15, 15)
+            )
+        ).add_to(updated_hub_layer)
+    
+    # Update auxiliary markers
+    for aux in feeder_warehouses:
+        aux_vehicles = {'autos': 0, 'bikes': 0}
+        
+        # Find vehicles for this auxiliary
+        for assignment in last_mile_assignments:
+            if assignment.get('auxiliary_id') == aux['id']:
+                aux_vehicles['autos'] = assignment.get('auto_vehicles', 0)
+                aux_vehicles['bikes'] = assignment.get('bike_vehicles', 0)
                 break
         
-        if within_radius:
-            covered_orders += 1
+        total_aux_vehicles = aux_vehicles['autos'] + aux_vehicles['bikes']
+        aux_name = aux.get('aux_name', f"AX{aux['id']}")
+        hub_code = aux.get('hub_code', f"HUB{aux['parent']}")
+        
+        # Updated popup with vehicle information  
+        aux_popup = f"<b>{aux_name} Auxiliary Hub</b><br>📍 Parent Hub: {hub_code}<br>📊 Current Orders: {aux.get('orders_within_radius', 0)}<br>⚡ Daily Capacity: {aux['capacity']} orders<br>🚛 LM Vehicles: {total_aux_vehicles} ({aux_vehicles['autos']}🛺 + {aux_vehicles['bikes']}🏍️)<br>🔄 Can deliver directly from auxiliary"
+        
+        folium.Marker(
+            location=[aux['lat'], aux['lon']],
+            popup=aux_popup,
+            tooltip=f"📦 {aux_name} | {total_aux_vehicles} vehicles",
+            icon=folium.DivIcon(
+                html=f'<div style="background-color: #FF6347; border: 2px solid #000; border-radius: 3px; width: 25px; height: 25px; display: flex; align-items: center; justify-content: center; position: relative;"><i class="fa fa-warehouse" style="color: white; font-size: 12px;"></i><span style="position: absolute; top: -8px; right: -8px; background: #FFD700; color: black; border-radius: 50%; width: 14px; height: 14px; font-size: 9px; font-weight: bold; display: flex; align-items: center; justify-content: center;">{total_aux_vehicles}</span></div>',
+                icon_size=(25, 25),
+                icon_anchor=(12, 12)
+            )
+        ).add_to(updated_aux_layer)
     
-    coverage_percentage = (covered_orders / total_orders) * 100 if total_orders > 0 else 0
-    
-    print(f"Coverage Analysis ({delivery_radius}km radius): {covered_orders}/{total_orders} orders within range ({coverage_percentage:.1f}%)")
-    
-    return big_warehouses, feeder_warehouses, density_clusters
+    # Add updated layers to map
+    updated_hub_layer.add_to(m)
+    updated_aux_layer.add_to(m)
 
 def add_density_clusters(m, density_clusters):
     """Add density clusters visualization to map"""
@@ -543,3 +597,179 @@ def create_relay_routes(m, df_filtered, big_warehouses, feeder_warehouses, show_
         auxiliary_layer.add_to(m) 
     if show_interhub:
         interhub_layer.add_to(m)
+
+def add_pincode_coverage_areas(m, feeder_warehouses, big_warehouses):
+    """Add pincode-based coverage areas instead of circles to eliminate overlaps"""
+    
+    try:
+        from pincode_warehouse_logic import load_pincode_boundaries
+        
+        # Load pincode boundaries
+        pincode_boundaries = load_pincode_boundaries()
+        if not pincode_boundaries:
+            print("⚠️ No pincode boundaries available, keeping circle coverage")
+            return
+        
+        # Create pincode coverage layer
+        pincode_coverage_layer = folium.FeatureGroup(name="🗺️ Pincode Coverage Areas", show=False)
+        
+        # Add coverage for auxiliary warehouses (these have pincode assignments)
+        for feeder in feeder_warehouses:
+            if 'pincode' in feeder and feeder['pincode'] in pincode_boundaries:
+                pincode = feeder['pincode']
+                boundary_data = pincode_boundaries[pincode]
+                polygon = boundary_data['polygon']
+                area_name = boundary_data['area_name']
+                
+                # Convert polygon to coordinates for folium
+                if hasattr(polygon, 'exterior'):
+                    coords = list(polygon.exterior.coords)
+                    
+                    # Determine color based on auxiliary capacity
+                    capacity = feeder.get('capacity', 200)
+                    if capacity >= 300:
+                        color = 'darkgreen'
+                        fill_color = 'lightgreen'
+                    elif capacity >= 200:
+                        color = 'orange'
+                        fill_color = 'lightyellow'
+                    else:
+                        color = 'red'
+                        fill_color = 'lightcoral'
+                    
+                    orders_served = feeder.get('orders_within_radius', feeder.get('orders', 0))
+                    utilization = (orders_served / capacity * 100) if capacity > 0 else 0
+                    
+                    folium.Polygon(
+                        locations=[(lat, lon) for lon, lat in coords],
+                        popup=f"<b>Auxiliary Coverage Area</b><br><b>Pincode:</b> {pincode}<br><b>Area:</b> {area_name}<br><b>Warehouse ID:</b> AX{feeder['id']}<br><b>Capacity:</b> {capacity} orders/day<br><b>Current Orders:</b> {orders_served}<br><b>Utilization:</b> {utilization:.1f}%<br><b>Coverage:</b> Exact pincode boundary",
+                        tooltip=f"📦 {pincode} - AX{feeder['id']} ({orders_served}/{capacity} orders)",
+                        color=color,
+                        weight=2,
+                        fill=True,
+                        fillColor=fill_color,
+                        fillOpacity=0.15
+                    ).add_to(pincode_coverage_layer)
+        
+        # Add main warehouse coverage areas (approximate based on nearby pincodes)
+        covered_pincodes = set(f.get('pincode') for f in feeder_warehouses if f.get('pincode'))
+        
+        # For main warehouses, show remaining uncovered pincodes in their vicinity
+        for big_wh in big_warehouses:
+            hub_lat, hub_lon = big_wh['lat'], big_wh['lon']
+            hub_code = big_wh.get('hub_code', f"HUB{big_wh['id']}")
+            
+            # Find nearby pincodes not covered by auxiliaries
+            nearby_uncovered = []
+            for pincode, boundary_data in pincode_boundaries.items():
+                if pincode not in covered_pincodes:
+                    centroid = boundary_data['centroid']
+                    # Check if within ~10km of main warehouse
+                    distance = ((hub_lat - centroid.y)**2 + (hub_lon - centroid.x)**2)**0.5 * 111
+                    if distance <= 10:  # 10km radius for main warehouse coverage
+                        nearby_uncovered.append((pincode, boundary_data, distance))
+            
+            # Add the closest uncovered pincodes to main warehouse coverage
+            nearby_uncovered.sort(key=lambda x: x[2])  # Sort by distance
+            
+            for pincode, boundary_data, distance in nearby_uncovered[:8]:  # Max 8 pincodes per main warehouse
+                polygon = boundary_data['polygon']
+                area_name = boundary_data['area_name']
+                
+                if hasattr(polygon, 'exterior'):
+                    coords = list(polygon.exterior.coords)
+                    
+                    folium.Polygon(
+                        locations=[(lat, lon) for lon, lat in coords],
+                        popup=f"<b>Main Warehouse Coverage</b><br><b>Pincode:</b> {pincode}<br><b>Area:</b> {area_name}<br><b>Hub:</b> {hub_code}<br><b>Distance:</b> {distance:.1f}km<br><b>Coverage:</b> Direct delivery from main warehouse<br><b>No auxiliary needed</b>",
+                        tooltip=f"🏭 {pincode} - {hub_code} direct coverage ({distance:.1f}km)",
+                        color='darkred',
+                        weight=1,
+                        fill=True,
+                        fillColor='lightcoral',
+                        fillOpacity=0.08
+                    ).add_to(pincode_coverage_layer)
+        
+        pincode_coverage_layer.add_to(m)
+        print(f"✅ Added pincode-based coverage areas for {len(feeder_warehouses)} auxiliaries")
+        
+    except Exception as e:
+        print(f"⚠️ Could not load pincode boundaries: {e}")
+        print("Keeping circle-based coverage as fallback")
+
+def add_auxiliary_hub_connections(m, feeder_warehouses, big_warehouses):
+    """Add connection lines from auxiliaries to their parent main hubs"""
+    
+    # Create auxiliary connections layer (always visible)
+    connections_layer = folium.FeatureGroup(name="🔗 Auxiliary-Hub Connections", show=True)
+    
+    for aux in feeder_warehouses:
+        # Find parent hub
+        parent_hub = None
+        for hub in big_warehouses:
+            if hub['id'] == aux['parent']:
+                parent_hub = hub
+                break
+        
+        if parent_hub:
+            # Color coding based on auxiliary capacity/utilization
+            capacity = aux.get('capacity', 200)
+            orders = aux.get('orders', 0)
+            utilization = (orders / capacity * 100) if capacity > 0 else 0
+            
+            if utilization >= 80:
+                line_color = '#FF4444'  # Red - high utilization
+                line_weight = 4
+            elif utilization >= 60:
+                line_color = '#FF8800'  # Orange - medium utilization
+                line_weight = 3
+            else:
+                line_color = '#4CAF50'  # Green - low utilization
+                line_weight = 2
+            
+            # Create connection line
+            folium.PolyLine(
+                locations=[
+                    [parent_hub['lat'], parent_hub['lon']],
+                    [aux['lat'], aux['lon']]
+                ],
+                color=line_color,
+                weight=line_weight,
+                opacity=0.8,
+                popup=f"<b>Supply Route</b><br><b>From:</b> {parent_hub.get('hub_code', 'HUB' + str(parent_hub['id']))} Main Hub<br><b>To:</b> AX{aux['id']} Auxiliary<br><b>Distance:</b> {aux.get('distance_to_parent', 0):.1f} km<br><b>Capacity:</b> {capacity} orders/day<br><b>Current Flow:</b> {orders} orders<br><b>Utilization:</b> {utilization:.1f}%<br><b>Pincode:</b> {aux.get('pincode', 'Unknown')}",
+                tooltip=f"🔗 HUB → AX{aux['id']} | {utilization:.0f}% utilized"
+            ).add_to(connections_layer)
+    
+    connections_layer.add_to(m)
+
+def add_interhub_connections(m, big_warehouses):
+    """Add optional interhub connection lines between main warehouses"""
+    
+    # Create interhub connections layer (hidden by default)
+    interhub_layer = folium.FeatureGroup(name="🏭 Inter-Hub Connections", show=False)
+    
+    # Create connections between all main warehouses (mesh network)
+    for i, hub1 in enumerate(big_warehouses):
+        for j, hub2 in enumerate(big_warehouses):
+            if i < j:  # Avoid duplicate lines
+                # Calculate distance
+                distance = ((hub1['lat'] - hub2['lat'])**2 + (hub1['lon'] - hub2['lon'])**2)**0.5 * 111
+                
+                hub1_code = hub1.get('hub_code', f"HUB{hub1['id']}")
+                hub2_code = hub2.get('hub_code', f"HUB{hub2['id']}")
+                
+                # Create interhub connection line
+                folium.PolyLine(
+                    locations=[
+                        [hub1['lat'], hub1['lon']],
+                        [hub2['lat'], hub2['lon']]
+                    ],
+                    color='#2196F3',  # Blue for interhub connections
+                    weight=2,
+                    opacity=0.6,
+                    dash_array='10, 5',  # Dashed line to distinguish from auxiliary connections
+                    popup=f"<b>Inter-Hub Route</b><br><b>Between:</b> {hub1_code} ↔ {hub2_code}<br><b>Distance:</b> {distance:.1f} km<br><b>Purpose:</b> Load balancing & backup supply<br><b>Capacity:</b> Flexible based on demand",
+                    tooltip=f"🏭 {hub1_code} ↔ {hub2_code} | {distance:.1f}km"
+                ).add_to(interhub_layer)
+    
+    interhub_layer.add_to(m)

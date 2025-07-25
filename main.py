@@ -93,17 +93,11 @@ if csv_file is not None:
     )
     analysis_method = "📈 Representative Daily Sample"  # Always use this for consistency
     
-    # Simplified network settings  
-    st.sidebar.subheader("🏗️ Network Settings")
-    delivery_radius = st.sidebar.selectbox(
-        "Last mile delivery radius",
-        options=[2, 3, 5],
-        index=1,
-        format_func=lambda x: f"{x}km radius"
-    )
+    # Fixed network settings - no user configuration needed
+    delivery_radius = 5  # Fixed at 5km for coverage calculations (not a constraint)
     
-    # Fixed defaults for optimized network
-    min_cluster_size = 100  # Higher threshold for fewer auxiliaries
+    # Fixed defaults for optimized network  
+    # min_cluster_size now handled dynamically in warehouse_logic based on delivery_radius
     max_distance_from_big = 15  # Allow wider coverage from main warehouses
     
     # Filter/sample data based on selected method
@@ -127,13 +121,11 @@ if csv_file is not None:
     # Simple performance indicator
     st.sidebar.success(f"✅ Processing {len(df_filtered):,} orders")
     
-    # Simple map controls
-    st.sidebar.subheader("🗺️ Map Display")
-    show_heatmap = st.sidebar.checkbox("Show order locations", value=True, help="Individual order markers clustered by location")
+    # Simple map controls (no sidebar section)
+    show_heatmap = True  # Always show order locations
     
     # Core functionality only
     show_warehouse_recommendations = True
-    show_coverage_circles = False
     show_hub_auxiliary_routes = False
     show_collection_routes = False
     show_interhub_relays = False
@@ -243,18 +235,23 @@ if csv_file is not None:
                     else:
                         bubble_size = 15
                     
-                    folium.Marker(
+                    folium.CircleMarker(
                         location=[hub['pickup_lat'], hub['pickup_long']],
+                        radius=bubble_size,
                         popup=f"<b>Customer: {customer}</b><br><b>Pickup Hub: {hub['pickup']}</b><br><b>Daily Orders: {scaled_orders}</b><br><b>Monthly Volume: {scaled_orders * 30:,}</b>",
                         tooltip=f"🏢 {hub['pickup']} - {scaled_orders} orders/day",
-                        icon=folium.Icon(color='blue', icon='arrow-up', prefix='fa')
+                        color='darkblue',
+                        weight=2,
+                        fill=True,
+                        fillColor='blue',
+                        fillOpacity=0.7
                     ).add_to(pickup_layer)
                     
-                    # Add order count label near the blue pickup marker
+                    # Add order count label on the bubble
                     folium.Marker(
-                        location=[hub['pickup_lat'] + 0.002, hub['pickup_long'] + 0.002],  # Slight offset
+                        location=[hub['pickup_lat'], hub['pickup_long']],
                         icon=folium.DivIcon(
-                            html=f'<div style="background: rgba(0,100,200,0.8); color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 10px; border: 1px solid white;">{scaled_orders}</div>',
+                            html=f'<div style="color: white; font-weight: bold; font-size: 10px; text-align: center; text-shadow: 1px 1px 1px black;">{scaled_orders}</div>',
                             icon_size=(40, 20),
                             icon_anchor=(20, 10)
                         )
@@ -268,6 +265,7 @@ if csv_file is not None:
         big_warehouses = []
         feeder_warehouses = []
         density_clusters = []
+        coverage_analysis = {'tiers': {'2km': 0, '3km': 0, '5km': 0, '>5km': 0}, 'percentages': {'2km': 0, '3km': 0, '5km': 0, '>5km': 0}}
         big_warehouse_count = 0
         
         # Create warehouse network
@@ -278,9 +276,19 @@ if csv_file is not None:
             else:
                 warehouse_target_capacity = len(df_filtered)
             
-            big_warehouses, feeder_warehouses, density_clusters = create_warehouse_network(
-                df_filtered, m, min_cluster_size, max_distance_from_big, delivery_radius, show_coverage_circles, warehouse_target_capacity
+            big_warehouses, feeder_warehouses, density_clusters, coverage_analysis = create_warehouse_network(
+                df_filtered, m, max_distance_from_big, delivery_radius, False, warehouse_target_capacity
             )
+            
+            # Calculate last mile assignments and update warehouse markers
+            if feeder_warehouses:
+                from simple_analytics import calculate_last_mile_vehicles
+                last_mile_counts, last_mile_assignments = calculate_last_mile_vehicles(feeder_warehouses, big_warehouses, warehouse_target_capacity, df_filtered)
+                # Update warehouse markers with vehicle information
+                from visualization import update_warehouse_markers_with_vehicles
+                update_warehouse_markers_with_vehicles(m, big_warehouses, feeder_warehouses, last_mile_assignments)
+            else:
+                last_mile_assignments = []
             big_warehouse_count = len(big_warehouses)
             
             # Add density clusters if requested
@@ -316,7 +324,7 @@ if csv_file is not None:
     map_data = st_folium(m, width=None, height=650, returned_objects=["last_object_clicked"])
     
     # Network overview (reduced spacing)
-    st.markdown("<div style='margin-top: -20px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='margin-top: -50px;'></div>", unsafe_allow_html=True)
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
@@ -326,12 +334,52 @@ if csv_file is not None:
         st.metric("📦 Auxiliaries", total_feeders)
     
     with col3:
-        coverage_percentage = (total_orders_in_radius / len(df_filtered)) * 100 if len(df_filtered) > 0 else 0
-        st.metric("🎯 Coverage", f"{coverage_percentage:.0f}%")
-        
-    with col4:
         monthly_orders = len(df_filtered) * 30
         st.metric("📈 Monthly Volume", f"{monthly_orders:,}")
+        
+    with col4:
+        # Show total warehouses
+        total_warehouses = big_warehouse_count + total_feeders
+        st.metric("🏢 Total Network", f"{total_warehouses} facilities")
+    
+    # Tiered Coverage Analysis
+    st.subheader("📍 Distance-Based Coverage Analysis")
+    
+    # Create 4 columns for coverage tiers
+    cov_col1, cov_col2, cov_col3, cov_col4 = st.columns(4)
+    
+    with cov_col1:
+        st.metric(
+            "≤2km Coverage", 
+            f"{coverage_analysis['percentages']['2km']:.1f}%",
+            f"{coverage_analysis['tiers']['2km']:,} orders",
+            help="Orders within 2km of nearest warehouse"
+        )
+    
+    with cov_col2:
+        st.metric(
+            "≤3km Coverage", 
+            f"{coverage_analysis['percentages']['3km']:.1f}%",
+            f"{coverage_analysis['tiers']['3km']:,} orders",
+            help="Orders within 3km of nearest warehouse"
+        )
+    
+    with cov_col3:
+        st.metric(
+            "≤5km Coverage", 
+            f"{coverage_analysis['percentages']['5km']:.1f}%",
+            f"{coverage_analysis['tiers']['5km']:,} orders",
+            help="Orders within 5km of nearest warehouse"
+        )
+    
+    with cov_col4:
+        st.metric(
+            ">5km Coverage", 
+            f"{coverage_analysis['percentages']['>5km']:.1f}%",
+            f"{coverage_analysis['tiers']['>5km']:,} orders",
+            help="Orders more than 5km from nearest warehouse",
+            delta_color="inverse"
+        )
     
     # First Mile Vehicle Summary (clean display below metrics)
     st.subheader("🚛 First Mile Fleet Requirements")
@@ -352,11 +400,136 @@ if csv_file is not None:
                 )
             col_idx += 1
     
+    # Reduce spacing before middle mile section
+    st.markdown("<div style='margin-top: -20px;'></div>", unsafe_allow_html=True)
+    
+    # Middle Mile Vehicle Summary - Split into Auxiliary and Interhub
+    if feeder_warehouses:  # Only show if there are auxiliary warehouses
+        from simple_analytics import calculate_auxiliary_vehicles, calculate_interhub_vehicles
+        
+        # Auxiliary restocking vehicles
+        aux_counts, aux_assignments = calculate_auxiliary_vehicles(feeder_warehouses, big_warehouses)
+        
+        if sum(aux_counts.values()) > 0:
+            st.subheader("📦 Auxiliary Restocking Fleet")
+            
+            aux_vehicle_cols = st.columns(len([v for v in aux_counts.values() if v > 0]))
+            aux_col_idx = 0
+            
+            for vehicle_type, count in aux_counts.items():
+                if count > 0:
+                    from simple_analytics import VEHICLE_SPECS
+                    vehicle_info = VEHICLE_SPECS[vehicle_type]
+                    
+                    with aux_vehicle_cols[aux_col_idx]:
+                        st.metric(
+                            f"{vehicle_info['icon']} {vehicle_info['name']}",
+                            f"{count} vehicles",
+                            help=f"Main to auxiliary restocking - Capacity: {vehicle_info['capacity']} orders/trip"
+                        )
+                    aux_col_idx += 1
+            
+            # Show auxiliary restocking details
+            if aux_assignments:
+                st.markdown("**Auxiliary Restocking Routes:**")
+                for assignment in aux_assignments:
+                    aux_list = ", ".join([f"AX{aux_id}" for aux_id in assignment['auxiliary_list']])
+                    vehicle_info = VEHICLE_SPECS[assignment['vehicle_type']]
+                    
+                    st.markdown(f"- **{assignment['hub_code']}**: {assignment['vehicles_needed']}{vehicle_info['icon']} → {aux_list} | {assignment['auxiliaries_served']} auxiliaries | Avg: {assignment['avg_distance']:.1f}km | Total capacity: {assignment['total_capacity']} orders/day")
+        
+        # Interhub transfer vehicles
+        interhub_counts, interhub_assignments = calculate_interhub_vehicles(big_warehouses)
+        
+        if sum(interhub_counts.values()) > 0:
+            st.subheader("🏭 Interhub Transfer Fleet")
+            
+            interhub_vehicle_cols = st.columns(len([v for v in interhub_counts.values() if v > 0]))
+            interhub_col_idx = 0
+            
+            for vehicle_type, count in interhub_counts.items():
+                if count > 0:
+                    from simple_analytics import VEHICLE_SPECS
+                    vehicle_info = VEHICLE_SPECS[vehicle_type]
+                    
+                    with interhub_vehicle_cols[interhub_col_idx]:
+                        st.metric(
+                            f"{vehicle_info['icon']} {vehicle_info['name']}",
+                            f"{count} vehicles",
+                            help=f"Hub to hub transfers - Capacity: {vehicle_info['capacity']} orders/trip"
+                        )
+                    interhub_col_idx += 1
+            
+            # Show interhub relay routes
+            if interhub_assignments:
+                st.markdown("**Interhub Relay Routes:**")
+                for assignment in interhub_assignments:
+                    vehicle_info = VEHICLE_SPECS[assignment['vehicle_type']]
+                    
+                    st.markdown(f"- **Relay {assignment['relay_group']}**: {assignment['vehicles_needed']}{vehicle_info['icon']} → {assignment['relay_route']} | {assignment['hub_count']} hubs | Circuit: {assignment['total_circuit_distance']:.1f}km | {assignment['daily_transfer_orders']} orders/day")
+    
+    # Reduce spacing before last mile section
+    st.markdown("<div style='margin-top: -20px;'></div>", unsafe_allow_html=True)
+    
+    # Last Mile Vehicle Summary  
+    if feeder_warehouses:  # Only show if there are auxiliary warehouses
+        from simple_analytics import calculate_last_mile_vehicles
+        
+        # Get target daily orders based on analysis method
+        if analysis_method == "📈 Representative Daily Sample":
+            target_orders = target_daily_orders
+        else:
+            target_orders = len(df_filtered)
+            
+        last_mile_counts, last_mile_assignments = calculate_last_mile_vehicles(feeder_warehouses, big_warehouses, target_orders, df_filtered)
+        
+        if sum(last_mile_counts.values()) > 0:
+            st.subheader("🏠 Last Mile Fleet Requirements")
+            
+            last_vehicle_cols = st.columns(len([v for v in last_mile_counts.values() if v > 0]))
+            last_col_idx = 0
+            
+            for vehicle_type, count in last_mile_counts.items():
+                if count > 0:
+                    from simple_analytics import VEHICLE_SPECS
+                    vehicle_info = VEHICLE_SPECS[vehicle_type]
+                    
+                    with last_vehicle_cols[last_col_idx]:
+                        delivery_help = f"Auxiliary to customer delivery - "
+                        if vehicle_type == 'auto':
+                            delivery_help += f"Max 45 XL orders/day ({vehicle_info.get('delivery_types', 'XL orders')})"
+                        elif vehicle_type == 'bike':
+                            delivery_help += f"Max 25 S/M/L orders/day ({vehicle_info.get('delivery_types', 'S/M/L orders')})"
+                        else:
+                            delivery_help += f"{vehicle_info.get('capacity', 20)} orders/day"
+                        
+                        st.metric(
+                            f"{vehicle_info['icon']} {vehicle_info['name']}",
+                            f"{count} vehicles",
+                            help=delivery_help
+                        )
+                    last_col_idx += 1
+            
+            # Show direct delivery from main hubs (if any)
+            direct_delivery_info = next((a for a in last_mile_assignments if a.get('hub_direct_delivery')), None)
+            if direct_delivery_info and direct_delivery_info['orders_handled'] > 0:
+                st.subheader("🏭 Direct Delivery from Main Hubs")
+                
+                direct_vehicles = []
+                if direct_delivery_info['auto_vehicles'] > 0:
+                    direct_vehicles.append(f"{direct_delivery_info['auto_vehicles']}🛺")
+                if direct_delivery_info['bike_vehicles'] > 0:
+                    direct_vehicles.append(f"{direct_delivery_info['bike_vehicles']}🏍️")
+                
+                st.markdown(f"**Long-distance deliveries**: {' + '.join(direct_vehicles)} | {direct_delivery_info['orders_handled']} orders/day | Avg delivery: 6.0km (areas not covered by auxiliaries)")
+                
+                st.info("💡 **Direct delivery optimizes cost**: Orders >3km from auxiliaries but ≤8km from main hubs are delivered directly, avoiding auxiliary restocking costs.")
+    
     # Show simple cost analytics (reduced spacing)
     st.markdown("<div style='margin-top: -15px;'></div>", unsafe_allow_html=True)
-    if show_warehouse_recommendations and len(feeder_warehouses) > 0:
+    if show_warehouse_recommendations:
         try:
-            from simple_analytics import show_simple_cost_analysis
+            from simple_analytics import show_simple_cost_analysis, show_margin_analysis
             
             # Get target daily orders based on analysis method
             if analysis_method == "📈 Representative Daily Sample":
@@ -365,6 +538,10 @@ if csv_file is not None:
                 target_capacity = len(df_filtered)
             
             show_simple_cost_analysis(big_warehouses, feeder_warehouses, target_capacity)
+            
+            # Show margin improvement analysis
+            show_margin_analysis(big_warehouses, feeder_warehouses)
+            
         except Exception as e:
             st.error(f"Cost analytics error: {str(e)}")
             
