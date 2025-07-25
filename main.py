@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import folium
-from folium.plugins import HeatMap
+from folium.plugins import HeatMap, MarkerCluster
 import json
 from streamlit_folium import st_folium
 import numpy as np
@@ -80,23 +80,9 @@ if csv_file is not None:
     # Show comparison and analysis insight
     st.sidebar.info(f"📈 Busiest: {busiest_day_orders:,} | 📊 Median: {median_day_orders:,}")
     
-    # Add capacity planning insight
-    if day_choice == "🔥 Busiest Day":
-        st.sidebar.markdown("""
-        **🔥 Peak Demand Planning**
-        - Designs for maximum daily capacity
-        - Higher infrastructure costs
-        - Better customer experience on busy days
-        - May be over-provisioned for typical days
-        """)
-    else:
-        st.sidebar.markdown("""
-        **📊 Typical Demand Planning**  
-        - Designs for average daily capacity
-        - Lower infrastructure costs
-        - Cost-efficient for normal operations
-        - May need surge capacity for peak days
-        """)
+    # Simplified capacity insight
+    capacity_type = "Peak" if day_choice == "🔥 Busiest Day" else "Typical"
+    st.sidebar.info(f"🎯 {capacity_type} demand planning - {selected_orders:,} orders/day")
     
     # Simple capacity target
     st.sidebar.subheader("🎯 Design Target")
@@ -107,18 +93,18 @@ if csv_file is not None:
     )
     analysis_method = "📈 Representative Daily Sample"  # Always use this for consistency
     
-    # Simple network settings  
+    # Simplified network settings  
     st.sidebar.subheader("🏗️ Network Settings")
     delivery_radius = st.sidebar.selectbox(
-        "Delivery coverage radius",
+        "Last mile delivery radius",
         options=[2, 3, 5],
         index=1,
-        format_func=lambda x: f"{x}km - {'Fast' if x <= 3 else 'Balanced'} delivery"
+        format_func=lambda x: f"{x}km radius"
     )
     
-    # Hidden defaults for clean UI
-    min_cluster_size = 30
-    max_distance_from_big = 10
+    # Fixed defaults for optimized network
+    min_cluster_size = 100  # Higher threshold for fewer auxiliaries
+    max_distance_from_big = 15  # Allow wider coverage from main warehouses
     
     # Filter/sample data based on selected method
     with st.spinner("Preparing delivery data for analysis..."):
@@ -138,27 +124,22 @@ if csv_file is not None:
             st.warning("No deliveries found for the selected date range. Please adjust the dates or use Representative Sample.")
         st.stop()
     
-    # Performance indicator
-    if len(df_filtered) > 10000:
-        st.warning(f"⚠️ Large dataset ({len(df_filtered):,} orders). Map may load slowly. Consider using a smaller date range.")
-    elif len(df_filtered) > 5000:
-        st.info(f"ℹ️ Moderate dataset ({len(df_filtered):,} orders). Performance may vary.")
-    else:
-        st.success(f"✅ Optimal dataset size ({len(df_filtered):,} orders). Fast loading expected.")
+    # Simple performance indicator
+    st.sidebar.success(f"✅ Processing {len(df_filtered):,} orders")
     
     # Simple map controls
     st.sidebar.subheader("🗺️ Map Display")
-    show_heatmap = st.sidebar.checkbox("Show order density", value=True)
-    show_coverage_circles = False  # Remove circles - use pincode clustering instead
-    show_hub_auxiliary_routes = st.sidebar.checkbox("Show warehouse connections", value=True, help="Lines connecting hubs to auxiliaries")
+    show_heatmap = st.sidebar.checkbox("Show order locations", value=True, help="Individual order markers clustered by location")
     
-    # Always show these for core functionality
+    # Core functionality only
     show_warehouse_recommendations = True
+    show_coverage_circles = False
+    show_hub_auxiliary_routes = False
     show_collection_routes = False
-    show_interhub_relays = True  # Enable inter-hub routes  
+    show_interhub_relays = False
     show_density_clusters = False
     show_competitors = False
-    show_existing_warehouses = True  # Show for comparison
+    show_existing_warehouses = False
     
     # Create map and add layers
     with st.spinner("Creating Blowhorn IF Network visualization..."):
@@ -189,203 +170,99 @@ if csv_file is not None:
             except:
                 st.sidebar.warning("Could not load GeoJSON file")
         
-        # Add heatmap layer
-        if show_heatmap and len(heatmap_data) > 0:
-            HeatMap(
-                heatmap_data,
-                name="Delivery Density Heatmap",
-                min_opacity=0.3,
-                max_zoom=18,
-                radius=25,
-                blur=20,
-                gradient={0.4: 'blue', 0.65: 'lime', 0.8: 'orange', 1.0: 'red'}
-            ).add_to(m)
+        # Add marker clusters instead of heatmap for precise order visualization
+        if show_heatmap and len(df_filtered) > 0:
+            # Create marker cluster for orders
+            order_cluster = MarkerCluster(
+                name="Order Locations",
+                overlay=True,
+                control=True,
+                show=True
+            )
+            
+            # Sample orders for performance (max 2000 markers)
+            display_orders = df_filtered.sample(min(2000, len(df_filtered)), random_state=42)
+            
+            for _, order in display_orders.iterrows():
+                folium.CircleMarker(
+                    location=[order['order_lat'], order['order_long']],
+                    radius=3,
+                    popup=f"<b>Order Location</b><br>Customer: {order.get('customer', 'N/A')}<br>Date: {order.get('created_date', 'N/A')}",
+                    tooltip="📍 Order location",
+                    color='green',
+                    weight=1,
+                    fill=True,
+                    fillColor='green',
+                    fillOpacity=0.6
+                ).add_to(order_cluster)
+            
+            order_cluster.add_to(m)
         
-        # Add customer pickup hubs
+        # Add customer pickup hubs (scaled to target capacity)
         customers = df_filtered['customer'].unique()
         all_hub_counts = df_filtered.groupby('pickup').size()
-        global_max_orders = all_hub_counts.max()
-        global_min_orders = all_hub_counts.min()
+        
+        # Scale pickup volumes proportionally to target capacity
+        current_total_orders = len(df_filtered)
+        if analysis_method == "📈 Representative Daily Sample":
+            scaling_factor = target_daily_orders / current_total_orders if current_total_orders > 0 else 1
+        else:
+            scaling_factor = 1
+        
+        global_max_orders = int(all_hub_counts.max() * scaling_factor)
+        global_min_orders = int(all_hub_counts.min() * scaling_factor)
         
         # Group customers by size for cleaner layer control
         major_customers = []
-        minor_customers_data = []
         
         for customer in customers:
             customer_data = df_filtered[df_filtered['customer'] == customer]
-            if len(customer_data) >= 100:  # Major customers with ≥100 orders
+            scaled_volume = int(len(customer_data) * scaling_factor)
+            if scaled_volume >= 50:  # Major customers threshold
                 major_customers.append(customer)
-            else:
-                minor_customers_data.append(customer_data)
         
-        # Create layers for major customers only
-        for customer in major_customers:
+        # Create a single pickup locations layer for clean toggling
+        pickup_layer = folium.FeatureGroup(name="🏢 Customer Pickup Locations", show=True)
+        
+        # Create layers for major customers only (cleaner display)
+        for customer in major_customers[:8]:  # Limit to top 8 customers for clean map
             customer_data = df_filtered[df_filtered['customer'] == customer]
             pickup_hubs = customer_data.groupby(['pickup', 'pickup_long', 'pickup_lat']).size().reset_index(name='order_count')
             
             if len(pickup_hubs) > 0:
-                customer_layer = folium.FeatureGroup(name=f"🏢 {customer[:15]}... ({len(pickup_hubs)})")
+                # Apply scaling factor to order counts
+                pickup_hubs['scaled_orders'] = (pickup_hubs['order_count'] * scaling_factor).astype(int)
                 
                 for _, hub in pickup_hubs.iterrows():
+                    scaled_orders = hub['scaled_orders']
+                    
                     # Use global scaling for consistency
                     if global_max_orders > global_min_orders:
-                        proportion = (hub['order_count'] - global_min_orders) / (global_max_orders - global_min_orders)
-                        bubble_size = 8 + (proportion * 32)
+                        proportion = (scaled_orders - global_min_orders) / (global_max_orders - global_min_orders)
+                        bubble_size = 8 + (proportion * 25)
                     else:
                         bubble_size = 15
                     
-                    folium.CircleMarker(
-                        location=[hub['pickup_lat'], hub['pickup_long']],
-                        radius=bubble_size,
-                        popup=f"<b>Customer: {customer}</b><br><b>Pickup Hub: {hub['pickup']}</b><br><b>Orders: {hub['order_count']}</b>",
-                        tooltip=f"🏢 {hub['pickup']} - {hub['order_count']} orders",
-                        color='#2E86AB',
-                        weight=3,
-                        fill=True,
-                        fillColor='#A23B72',
-                        fillOpacity=0.8
-                    ).add_to(customer_layer)
-                    
                     folium.Marker(
                         location=[hub['pickup_lat'], hub['pickup_long']],
+                        popup=f"<b>Customer: {customer}</b><br><b>Pickup Hub: {hub['pickup']}</b><br><b>Daily Orders: {scaled_orders}</b><br><b>Monthly Volume: {scaled_orders * 30:,}</b>",
+                        tooltip=f"🏢 {hub['pickup']} - {scaled_orders} orders/day",
+                        icon=folium.Icon(color='blue', icon='arrow-up', prefix='fa')
+                    ).add_to(pickup_layer)
+                    
+                    # Add order count label near the blue pickup marker
+                    folium.Marker(
+                        location=[hub['pickup_lat'] + 0.002, hub['pickup_long'] + 0.002],  # Slight offset
                         icon=folium.DivIcon(
-                            html=f'<div style="color: white; font-weight: bold; font-size: 12px; text-align: center; text-shadow: 1px 1px 1px black;">{hub["order_count"]}</div>',
-                            icon_size=(30, 20),
-                            icon_anchor=(15, 10)
+                            html=f'<div style="background: rgba(0,100,200,0.8); color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 10px; border: 1px solid white;">{scaled_orders}</div>',
+                            icon_size=(40, 20),
+                            icon_anchor=(20, 10)
                         )
-                    ).add_to(customer_layer)
-                
-                customer_layer.add_to(m)
+                    ).add_to(pickup_layer)
         
-        # Add all customers as individual layers (no "Other Customers" grouping)
-        for customer in customers:
-            if customer not in major_customers and len(df_filtered[df_filtered['customer'] == customer]) > 0:
-                customer_data = df_filtered[df_filtered['customer'] == customer]
-                pickup_hubs = customer_data.groupby(['pickup', 'pickup_long', 'pickup_lat']).size().reset_index(name='order_count')
-                
-                if len(pickup_hubs) > 0:
-                    customer_layer = folium.FeatureGroup(name=f"🏢 {customer[:15]}... ({len(pickup_hubs)})")
-                    
-                    for _, hub in pickup_hubs.iterrows():
-                        if global_max_orders > global_min_orders:
-                            proportion = (hub['order_count'] - global_min_orders) / (global_max_orders - global_min_orders)
-                            bubble_size = 8 + (proportion * 32)
-                        else:
-                            bubble_size = 15
-                        
-                        folium.CircleMarker(
-                            location=[hub['pickup_lat'], hub['pickup_long']],
-                            radius=bubble_size,
-                            popup=f"<b>Customer: {customer}</b><br><b>Pickup Hub: {hub['pickup']}</b><br><b>Orders: {hub['order_count']}</b>",
-                            tooltip=f"🏢 {hub['pickup']} - {hub['order_count']} orders",
-                            color='#2E86AB',
-                            weight=2,
-                            fill=True,
-                            fillColor='#A23B72',
-                            fillOpacity=0.6
-                        ).add_to(customer_layer)
-                        
-                        folium.Marker(
-                            location=[hub['pickup_lat'], hub['pickup_long']],
-                            icon=folium.DivIcon(
-                                html=f'<div style="color: white; font-weight: bold; font-size: 12px; text-align: center; text-shadow: 1px 1px 1px black;">{hub["order_count"]}</div>',
-                                icon_size=(30, 20),
-                                icon_anchor=(15, 10)
-                            )
-                        ).add_to(customer_layer)
-                    
-                    customer_layer.add_to(m)
+        pickup_layer.add_to(m)
         
-        # Add Q-Commerce competitor zones (if enabled)
-        if show_competitors:
-            qcommerce_layer = folium.FeatureGroup(name="⚡ Competitors")
-            
-            qcommerce_hotspots = [
-                {"name": "Koramangala (Zepto/Blinkit Hub)", "lat": 12.9279, "lon": 77.6271, "radius": 2000},
-                {"name": "Indiranagar (Multi Q-Commerce)", "lat": 12.9784, "lon": 77.6408, "radius": 2000},
-                {"name": "HSR Layout (Swiggy Instamart)", "lat": 12.9082, "lon": 77.6476, "radius": 2000},
-                {"name": "Whitefield (Tech Hub Q-Commerce)", "lat": 12.9698, "lon": 77.7500, "radius": 2500},
-                {"name": "Jayanagar (BigBasket BB Now)", "lat": 12.9249, "lon": 77.5833, "radius": 2000},
-                {"name": "BTM Layout (Dense Q-Commerce)", "lat": 12.9116, "lon": 77.6103, "radius": 1800},
-                {"name": "Electronic City (IT Hub Delivery)", "lat": 12.8456, "lon": 77.6603, "radius": 2500}
-            ]
-            
-            for zone in qcommerce_hotspots:
-                zone_orders = 0
-                for _, row in df_filtered.iterrows():
-                    lat_diff = abs(row['order_lat'] - zone['lat'])
-                    lon_diff = abs(row['order_long'] - zone['lon'])
-                    distance_km = ((lat_diff ** 2 + lon_diff ** 2) ** 0.5) * 111
-                    
-                    if distance_km <= (zone['radius'] / 1000):
-                        zone_orders += 1
-                
-                if zone_orders > 50:
-                    color = 'red'
-                    opacity = 0.3
-                elif zone_orders > 20:
-                    color = 'orange'
-                    opacity = 0.25
-                else:
-                    color = 'yellow'
-                    opacity = 0.2
-                
-                folium.Circle(
-                    location=[zone['lat'], zone['lon']],
-                    radius=zone['radius'],
-                    popup=f"<b>{zone['name']}</b><br>Your Orders: {zone_orders}<br>Radius: {zone['radius']/1000:.1f} km<br>Competition: Zepto, Blinkit, Swiggy, BigBasket",
-                    tooltip=f"⚡ {zone['name']} ({zone_orders} orders)",
-                    color=color,
-                    weight=2,
-                    fill=True,
-                    fillColor=color,
-                    fillOpacity=opacity
-                ).add_to(qcommerce_layer)
-            
-            qcommerce_layer.add_to(m)
-        
-        # Add existing Blowhorn warehouses overlay (if enabled)
-        if show_existing_warehouses:
-            existing_warehouses = [
-                {"name": "Mahadevapura", "lat": 12.99119358634228, "lon": 77.70770502883568},
-                {"name": "Hebbal", "lat": 13.067425838287791, "lon": 77.60532804961407},
-                {"name": "Chandra Layout", "lat": 12.997711927246344, "lon": 77.51384747974708},
-                {"name": "Banashankari", "lat": 12.89201406419532, "lon": 77.55634971164321},
-                {"name": "Kudlu", "lat": 12.880621849247323, "lon": 77.65504449205629},
-                {"name": "Domlur Post Office", "lat": 12.961033527003837, "lon": 77.6360033595211}
-            ]
-            
-            existing_layer = folium.FeatureGroup(name="📍 Existing Warehouses")
-            
-            for wh in existing_warehouses:
-                # Count orders near existing warehouse
-                nearby_orders = 0
-                for _, row in df_filtered.iterrows():
-                    distance = ((row['order_lat'] - wh['lat'])**2 + (row['order_long'] - wh['lon'])**2)**0.5 * 111
-                    if distance <= 8:  # 8km radius
-                        nearby_orders += 1
-                
-                # Add existing warehouse marker
-                folium.Marker(
-                    location=[wh['lat'], wh['lon']],
-                    popup=f"<b>Current: {wh['name']}</b><br>Type: Blowhorn Microwarehouse<br>Orders within 8km: {nearby_orders}<br>Status: Existing facility",
-                    tooltip=f"📍 {wh['name']} ({nearby_orders} orders nearby)",
-                    icon=folium.Icon(color='green', icon='home', prefix='fa')
-                ).add_to(existing_layer)
-                
-                # Add coverage circle for existing warehouse
-                folium.Circle(
-                    location=[wh['lat'], wh['lon']],
-                    radius=8000,
-                    popup=f"{wh['name']} Current Coverage (8km)",
-                    color='green',
-                    weight=2,
-                    fill=True,
-                    fillColor='green',
-                    fillOpacity=0.05
-                ).add_to(existing_layer)
-            
-            existing_layer.add_to(m)
+        # Skip competitor zones and existing warehouses to focus on optimal new network
         
         # Initialize variables
         big_warehouses = []
@@ -410,10 +287,19 @@ if csv_file is not None:
             if show_density_clusters:
                 add_density_clusters(m, density_clusters)
             
-            # Add route networks if requested (separate options)
-            if show_collection_routes or show_hub_auxiliary_routes or show_interhub_relays:
-                create_relay_routes(m, df_filtered, big_warehouses, feeder_warehouses, 
-                                  show_collection_routes, show_hub_auxiliary_routes, show_interhub_relays)
+            # Skip route networks to focus on warehouse visualization
+        
+        # Calculate first mile vehicle requirements for display below
+        from simple_analytics import calculate_first_mile_vehicles
+        
+        # Calculate scaling factor for vehicle requirements
+        current_total_orders = len(df_filtered)
+        if analysis_method == "📈 Representative Daily Sample":
+            scaling_factor = target_daily_orders / current_total_orders if current_total_orders > 0 else 1
+        else:
+            scaling_factor = 1
+            
+        vehicle_counts, vehicle_assignments = calculate_first_mile_vehicles(df_filtered, scaling_factor)
         
         # Add compact layer control (collapsed by default)
         folium.LayerControl(collapsed=True, position='topright').add_to(m)
@@ -427,28 +313,50 @@ if csv_file is not None:
     st.subheader("🗺️ Your Ideal Network Design")
     
     # Display the map with more height for focus
-    map_data = st_folium(m, width=None, height=600, returned_objects=["last_object_clicked"])
+    map_data = st_folium(m, width=None, height=650, returned_objects=["last_object_clicked"])
     
-    # Key insights only
-    col1, col2, col3 = st.columns(3)
+    # Network overview (reduced spacing)
+    st.markdown("<div style='margin-top: -20px;'></div>", unsafe_allow_html=True)
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("🏭 Main Warehouses", big_warehouse_count, help="Large distribution hubs")
+        st.metric("🏭 Main Hubs", big_warehouse_count)
     
     with col2:
-        st.metric("📦 Auxiliary Warehouses", total_feeders, help="Last-mile delivery points")
+        st.metric("📦 Auxiliaries", total_feeders)
     
     with col3:
         coverage_percentage = (total_orders_in_radius / len(df_filtered)) * 100 if len(df_filtered) > 0 else 0
-        st.metric("🎯 Coverage", f"{coverage_percentage:.0f}%", help=f"Orders within {delivery_radius}km of warehouses")
+        st.metric("🎯 Coverage", f"{coverage_percentage:.0f}%")
+        
+    with col4:
+        monthly_orders = len(df_filtered) * 30
+        st.metric("📈 Monthly Volume", f"{monthly_orders:,}")
     
-    # Show analytics if warehouses exist
+    # First Mile Vehicle Summary (clean display below metrics)
+    st.subheader("🚛 First Mile Fleet Requirements")
+    
+    vehicle_cols = st.columns(len([v for v in vehicle_counts.values() if v > 0]))
+    col_idx = 0
+    
+    for vehicle_type, count in vehicle_counts.items():
+        if count > 0:
+            from simple_analytics import VEHICLE_SPECS
+            vehicle_info = VEHICLE_SPECS[vehicle_type]
+            
+            with vehicle_cols[col_idx]:
+                st.metric(
+                    f"{vehicle_info['icon']} {vehicle_info['name']}",
+                    f"{count} vehicles",
+                    help=f"Capacity: {vehicle_info['capacity']} orders/trip"
+                )
+            col_idx += 1
+    
+    # Show simple cost analytics (reduced spacing)
+    st.markdown("<div style='margin-top: -15px;'></div>", unsafe_allow_html=True)
     if show_warehouse_recommendations and len(feeder_warehouses) > 0:
         try:
-            from analytics import show_network_analysis
-            # Get current vehicle mix from config or use default
-            import analytics
-            current_vehicle_mix = analytics.LAST_MILE_CONFIG.get('default_mix', 'auto_heavy')
+            from simple_analytics import show_simple_cost_analysis
             
             # Get target daily orders based on analysis method
             if analysis_method == "📈 Representative Daily Sample":
@@ -456,9 +364,9 @@ if csv_file is not None:
             else:
                 target_capacity = len(df_filtered)
             
-            show_network_analysis(df_filtered, big_warehouses, feeder_warehouses, big_warehouse_count, total_feeders, total_orders_in_radius, coverage_percentage, delivery_radius, current_vehicle_mix, target_capacity, median_day_orders, busiest_day_orders)
+            show_simple_cost_analysis(big_warehouses, feeder_warehouses, target_capacity)
         except Exception as e:
-            st.error(f"Analytics module error: {str(e)}")
+            st.error(f"Cost analytics error: {str(e)}")
             
                 
 else:
@@ -468,4 +376,5 @@ else:
 
 # Clean sidebar footer
 st.sidebar.markdown("---")
-st.sidebar.markdown("*Blowhorn Network Designer*")
+st.sidebar.markdown("🚛 **Blowhorn Network Designer**")
+st.sidebar.markdown("📍 Optimized for Bengaluru logistics")

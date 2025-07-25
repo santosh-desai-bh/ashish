@@ -195,31 +195,42 @@ def create_pincode_based_feeder_network(df_filtered, big_warehouses, min_cluster
         return create_grid_based_feeder_network(df_filtered, big_warehouses, min_cluster_size, max_distance_from_big, delivery_radius)
 
 def create_grid_based_feeder_network(df_filtered, big_warehouses, min_cluster_size, max_distance_from_big, delivery_radius):
-    """Create feeder network using optimized grid system with minimal overlaps"""
+    """Create minimal feeder network (2-3 auxiliaries) to reduce middle mile costs"""
     
-    # Use larger separation distances to minimize overlaps
+    # Aggressively minimize auxiliary warehouses for cost efficiency
     if delivery_radius <= 2:
-        grid_size = 0.008  # Larger grid for less overlap
-        min_gap_orders = 15
-        feeder_separation = 3.0  # Increased separation
+        grid_size = 0.025  # Very large grid to minimize auxiliaries
+        min_gap_orders = 100  # High threshold for auxiliary placement
+        feeder_separation = 8.0  # Large separation
+        max_auxiliaries = 2  # Limit to 2 auxiliaries
     elif delivery_radius <= 3:
-        grid_size = 0.012  # Larger grid for 3km radius
-        min_gap_orders = 20
-        feeder_separation = 4.0  # Increased separation
+        grid_size = 0.030  # Even larger grid
+        min_gap_orders = 120
+        feeder_separation = 10.0  # Very large separation
+        max_auxiliaries = 3  # Limit to 3 auxiliaries
     elif delivery_radius <= 5:
-        grid_size = 0.018  # Much larger grid for 5km radius
-        min_gap_orders = 30
-        feeder_separation = 6.0  # Much larger separation
+        grid_size = 0.035  # Massive grid for minimal auxiliaries
+        min_gap_orders = 150
+        feeder_separation = 12.0  # Massive separation
+        max_auxiliaries = 2  # Keep minimal
     else:
-        grid_size = 0.025  # Very large grid for 7km+ radius
-        min_gap_orders = 40
-        feeder_separation = 8.0  # Very large separation
+        grid_size = 0.040  # Huge grid
+        min_gap_orders = 200
+        feeder_separation = 15.0  # Huge separation
+        max_auxiliaries = 2  # Minimal auxiliaries
     
-    # Step 1: Find high-density clusters with adjusted parameters
+    # Step 1: Find only the highest density clusters for minimal auxiliaries
     density_clusters = find_order_density_clusters(df_filtered, min_cluster_size, grid_size)
+    
+    # Limit to only top density clusters to minimize auxiliary count
+    density_clusters = density_clusters[:max_auxiliaries * 2]  # Only consider top clusters
+    
     feeder_warehouses = place_feeder_warehouses_near_clusters(
         density_clusters, big_warehouses, max_distance_from_big, delivery_radius, feeder_separation
     )
+    
+    # Hard limit auxiliary count for cost control
+    feeder_warehouses = feeder_warehouses[:max_auxiliaries]
     
     # Step 2: Find uncovered orders (more than delivery_radius from any feeder)
     uncovered_orders = []
@@ -368,9 +379,8 @@ def calculate_big_warehouse_locations(df_filtered):
     try:
         total_orders = len(df_filtered)
         
-        # Ensure minimum 3 big warehouses for proper first mile coverage with higher utilization
-        big_warehouse_count = max(3, total_orders // 600)  # Minimum 3 hubs, 600 orders per hub
-        big_warehouse_count = min(big_warehouse_count, 8)  # Cap at 8 for Bangalore
+        # Fixed 5 main warehouses for Bengaluru geography (never changes)
+        big_warehouse_count = 5  # Always 5 main warehouses for optimal Bengaluru coverage
         
         # Use geographic distribution for warehouse placement - prioritize city center areas
         lat_median = df_filtered['order_lat'].median()
