@@ -737,7 +737,7 @@ def calculate_dynamic_costs(network_config, monthly_orders):
 def show_margin_analysis(main_warehouses, auxiliary_warehouses):
     """Show margin improvement analysis with dynamic network scaling from 45k to 100k orders"""
     
-    st.subheader("📈 Dynamic Network Scaling Analysis")
+    st.subheader("Margin Analysis")
     
     # Variable revenue per order based on volume (economies of scale for pricing)
     def get_revenue_per_order(monthly_orders):
@@ -799,34 +799,6 @@ def show_margin_analysis(main_warehouses, auxiliary_warehouses):
         'Margin %': margin_percentages
     })
     
-    # Show single comprehensive table
-    st.markdown("**📊 Scale Economics Analysis**")
-    
-    # Create single comprehensive table
-    comprehensive_df = []
-    for detail in network_details:
-        config = detail['network_config']
-        cost = detail['cost_data']
-        monthly_orders = detail['monthly_orders']
-        monthly_revenue = monthly_orders * detail['arpo']
-        monthly_margin = monthly_revenue - cost['total_monthly']
-        margin_percentage = (monthly_margin / monthly_revenue) * 100 if monthly_revenue > 0 else 0
-        
-        comprehensive_df.append({
-            'Monthly Orders': f"{monthly_orders//1000}k",
-            'ARPO': f"₹{detail['arpo']:.0f}",
-            'Monthly Revenue': f"₹{monthly_revenue/1000000:.1f}M",
-            'Monthly Cost': f"₹{cost['total_monthly']/1000000:.1f}M",
-            'Monthly Margin': f"₹{monthly_margin/1000000:.1f}M",
-            'Margin %': f"{margin_percentage:.1f}%",
-            'Cost/Order': f"₹{cost['cost_per_order']:.1f}",
-            'Main Hubs': config['main_warehouses'],
-            'Auxiliaries': config['auxiliary_warehouses'],
-            'Total Vehicles': config['last_mile_vehicles']['auto'] + config['last_mile_vehicles']['bike']
-        })
-    
-    comprehensive_table_df = pd.DataFrame(comprehensive_df)
-    st.dataframe(comprehensive_table_df, use_container_width=True)
     
     # Key insights
     min_margin = margin_percentages[0]
@@ -873,4 +845,151 @@ def show_margin_analysis(main_warehouses, auxiliary_warehouses):
     - **Margin Improvement**: {margin_improvement:.1f} percentage points gain from 45k to 100k orders
     - **Revenue at Scale**: ₹{revenues[-1]:.1f}M monthly revenue at 100k orders/day
     - **Cost Efficiency**: Transportation cost per order decreases with higher vehicle utilization
+    """)
+    
+    # Volume-based cost scaling analysis - variable cost items affected by order volumes
+    st.markdown("---")
+    st.markdown("**📊 Volume-Based Cost Scaling Impact**")
+    
+    # Analyze how variable cost items change with volume scaling
+    scaling_analysis = []
+    base_volume = 45000  # Base case: 45k orders/month
+    peak_volume = 100000  # Peak case: 100k orders/month
+    
+    # Get base and peak configurations
+    base_config = calculate_network_for_volume(base_volume)
+    peak_config = calculate_network_for_volume(peak_volume)
+    base_costs = calculate_dynamic_costs(base_config, base_volume)
+    peak_costs = calculate_dynamic_costs(peak_config, peak_volume)
+    
+    # Key insight: Last mile cost per order reduction due to route density
+    base_last_mile_cpo = base_costs['last_mile_cost'] / base_volume
+    peak_last_mile_cpo = peak_costs['last_mile_cost'] / peak_volume
+    
+    # Vehicle-specific delivery efficiency improvements with volume scaling
+    # Auto: ₹900 per trip, from 22 to 45 deliveries per trip
+    # Bike: ₹400 per trip, from 12 to 25 deliveries per trip (proportional scaling)
+    auto_current_deliveries = 22
+    auto_improved_deliveries = 45
+    bike_current_deliveries = 12  # Proportionally lower base for bikes
+    bike_improved_deliveries = 25  # Bikes' maximum capacity from VEHICLE_SPECS
+    
+    # Calculate the cost improvement for each volume tier  
+    for monthly_orders in [45000, 55000, 65000, 75000, 85000, 95000, 100000]:
+        # Use the same calculation logic as the main cost analysis
+        daily_orders = monthly_orders // 30
+        config = calculate_network_for_volume(monthly_orders)
+        
+        # Use simple cost calculation (same as main analysis) instead of dynamic costs
+        main_count = config['main_warehouses'] 
+        aux_count = config['auxiliary_warehouses']
+        costs = calculate_simple_costs(main_count, aux_count, daily_orders)
+        
+        # Current last mile cost per order (combination of autos and bikes)
+        current_last_mile_cpo = costs['last_mile_cost'] / monthly_orders
+        
+        # Volume scaling progress (0 to 1 as orders go from 45k to 100k)
+        volume_progress = min(1.0, (monthly_orders - 45000) / (100000 - 45000))
+        
+        # Progressive delivery efficiency for each vehicle type
+        auto_deliveries_per_trip = auto_current_deliveries + volume_progress * (auto_improved_deliveries - auto_current_deliveries)
+        bike_deliveries_per_trip = bike_current_deliveries + volume_progress * (bike_improved_deliveries - bike_current_deliveries)
+        
+        # Order mix: 40% XL (autos only), 60% S/M/L (mixed auto/bike)
+        xl_orders = monthly_orders * 0.4  # XL orders - autos only
+        sml_orders = monthly_orders * 0.6  # S/M/L orders - mixed allocation
+        
+        # Calculate vehicle-specific cost improvements
+        # Auto cost improvement: ₹900 trip cost with improving deliveries per trip
+        auto_current_cost_per_delivery = 900 / auto_current_deliveries  # ₹40.9
+        auto_improved_cost_per_delivery = 900 / auto_deliveries_per_trip
+        auto_savings_per_delivery = auto_current_cost_per_delivery - auto_improved_cost_per_delivery
+        
+        # Bike cost improvement: ₹400 trip cost with improving deliveries per trip  
+        bike_current_cost_per_delivery = 400 / bike_current_deliveries  # ₹33.3
+        bike_improved_cost_per_delivery = 400 / bike_deliveries_per_trip
+        bike_savings_per_delivery = bike_current_cost_per_delivery - bike_improved_cost_per_delivery
+        
+        # Mixed allocation for S/M/L orders (70% bikes, 30% autos based on distance)
+        sml_bike_ratio = 0.7
+        sml_auto_ratio = 0.3
+        
+        # Total last mile savings per order
+        auto_order_savings = (xl_orders * auto_savings_per_delivery + sml_orders * sml_auto_ratio * auto_savings_per_delivery) / monthly_orders
+        bike_order_savings = (sml_orders * sml_bike_ratio * bike_savings_per_delivery) / monthly_orders
+        
+        last_mile_savings_per_order = auto_order_savings + bike_order_savings
+        improved_last_mile_cpo = current_last_mile_cpo - last_mile_savings_per_order
+        
+        # Cost savings
+        last_mile_savings_per_order = current_last_mile_cpo - improved_last_mile_cpo
+        monthly_last_mile_savings = last_mile_savings_per_order * monthly_orders
+        
+        # Variable cost items affected by scaling
+        # 1. Vehicle utilization improvement (spread fixed vehicle costs over more orders)
+        vehicle_utilization_savings = (costs['first_mile_cost'] + costs['middle_mile_cost']) * 0.05 * volume_progress
+        
+        # 2. Fixed warehouse costs spread over more orders
+        fixed_cost_advantage_per_order = (costs['warehouse_rent'] + costs['people_costs']) / monthly_orders
+        
+        # Total cost per order with scaling improvements
+        original_cpo = costs['cost_per_order']
+        improved_cpo = original_cpo - last_mile_savings_per_order - (vehicle_utilization_savings / monthly_orders)
+        
+        # Revenue and margin with scaling
+        arpo = get_revenue_per_order(monthly_orders)
+        improved_margin_per_order = arpo - improved_cpo
+        improved_margin_percentage = (improved_margin_per_order / arpo) * 100
+        
+        # Calculate individual cost components per order for better breakdown
+        warehouse_cost_per_order = costs['warehouse_rent'] / monthly_orders
+        people_cost_per_order = costs['people_costs'] / monthly_orders
+        transport_cost_per_order = costs['transportation_costs'] / monthly_orders
+        improved_transport_cost_per_order = transport_cost_per_order - last_mile_savings_per_order - (vehicle_utilization_savings / monthly_orders)
+        
+        scaling_analysis.append({
+            'Volume': f"{monthly_orders//1000}k",
+            'Auto Del/Trip': f"{auto_deliveries_per_trip:.0f}",
+            'Bike Del/Trip': f"{bike_deliveries_per_trip:.0f}",
+            'Warehouse CPO': f"₹{warehouse_cost_per_order:.1f}",
+            'People CPO': f"₹{people_cost_per_order:.1f}",
+            'Transport CPO': f"₹{transport_cost_per_order:.1f} → ₹{improved_transport_cost_per_order:.1f}",
+            'Original CPO': f"₹{original_cpo:.1f}",
+            'Improved CPO': f"₹{improved_cpo:.1f}",
+            'Savings/Order': f"₹{original_cpo - improved_cpo:.1f}",
+            'Improved Margin %': f"{improved_margin_percentage:.1f}%"
+        })
+    
+    scaling_df = pd.DataFrame(scaling_analysis)
+    st.dataframe(scaling_df, use_container_width=True)
+    
+    # Key variable cost insights
+    st.info(f"""
+    **🎯 Variable Cost Scaling Benefits:**
+    
+    **Last Mile Route Density (Key Driver):**
+    
+    **Autos (XL + 30% S/M/L orders):**
+    - At 45k orders: ~22 deliveries per ₹900 trip = ₹40.9 per delivery
+    - At 100k orders: ~45 deliveries per ₹900 trip = ₹20.0 per delivery  
+    - **51% reduction** in auto delivery cost
+    
+    **Bikes (70% S/M/L orders):**
+    - At 45k orders: ~12 deliveries per ₹400 trip = ₹33.3 per delivery
+    - At 100k orders: ~25 deliveries per ₹400 trip = ₹16.0 per delivery
+    - **52% reduction** in bike delivery cost
+    
+    **Combined Impact:**
+    - Proportional scaling across both vehicle types as route density improves
+    - Higher order volumes → closer deliveries → more deliveries per trip
+    
+    **Vehicle Utilization Scaling:**
+    - First/Middle mile vehicles achieve 5-10% better utilization at higher volumes
+    - Fixed vehicle costs spread across more orders
+    
+    **Fixed Cost Distribution:**
+    - Warehouse rent & staff costs become smaller percentage of total cost per order
+    - Infrastructure investment leveraged across growing order base
+    
+    **Total Impact:** ₹{scaling_analysis[0]['Original CPO'][1:]} → ₹{scaling_analysis[-1]['Improved CPO'][1:]} per order (45k → 100k volume)
     """)
