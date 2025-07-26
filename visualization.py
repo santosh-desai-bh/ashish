@@ -700,8 +700,8 @@ def add_pincode_coverage_areas(m, feeder_warehouses, big_warehouses):
 def add_auxiliary_hub_connections(m, feeder_warehouses, big_warehouses):
     """Add connection lines from auxiliaries to their parent main hubs"""
     
-    # Create auxiliary connections layer (always visible)
-    connections_layer = folium.FeatureGroup(name="🔗 Auxiliary-Hub Connections", show=True)
+    # Create auxiliary connections layer (visible by default to show hub assignments)
+    connections_layer = folium.FeatureGroup(name="🔗 Auxiliary-Hub Assignments", show=True)
     
     for aux in feeder_warehouses:
         # Find parent hub
@@ -727,7 +727,11 @@ def add_auxiliary_hub_connections(m, feeder_warehouses, big_warehouses):
                 line_color = '#4CAF50'  # Green - low utilization
                 line_weight = 2
             
-            # Create connection line
+            # Create connected auxiliary name format: ParentHub-AXid
+            parent_code = parent_hub.get('hub_code', f"HUB{parent_hub['id']}")
+            aux_connected_name = f"{parent_code}-AX{aux['id']}"
+            
+            # Create connection line with dotted style
             folium.PolyLine(
                 locations=[
                     [parent_hub['lat'], parent_hub['lon']],
@@ -736,40 +740,100 @@ def add_auxiliary_hub_connections(m, feeder_warehouses, big_warehouses):
                 color=line_color,
                 weight=line_weight,
                 opacity=0.8,
-                popup=f"<b>Supply Route</b><br><b>From:</b> {parent_hub.get('hub_code', 'HUB' + str(parent_hub['id']))} Main Hub<br><b>To:</b> AX{aux['id']} Auxiliary<br><b>Distance:</b> {aux.get('distance_to_parent', 0):.1f} km<br><b>Capacity:</b> {capacity} orders/day<br><b>Current Flow:</b> {orders} orders<br><b>Utilization:</b> {utilization:.1f}%<br><b>Pincode:</b> {aux.get('pincode', 'Unknown')}",
-                tooltip=f"🔗 HUB → AX{aux['id']} | {utilization:.0f}% utilized"
+                dash_array='5, 5',  # Dotted line for auxiliary connections
+                popup=f"<b>🏭→🏪 Hub Assignment</b><br><b>Main Hub:</b> {parent_code} ({parent_hub.get('hub_name', 'Main Hub')})<br><b>Auxiliary:</b> {aux_connected_name} ({aux.get('pincode', 'Unknown')})<br><b>Assignment Distance:</b> {aux.get('distance_to_parent', 0):.1f} km<br><b>Auxiliary Capacity:</b> {capacity} orders/day<br><b>Current Orders:</b> {orders}<br><b>Utilization:</b> {utilization:.1f}%<br><b>Service Area:</b> {aux.get('coverage_area', 'Local delivery')}<br><b>Assignment Logic:</b> Closest main hub for supply efficiency",
+                tooltip=f"🏭 {parent_code} → 🏪 {aux_connected_name} | {utilization:.0f}% utilized"
             ).add_to(connections_layer)
     
     connections_layer.add_to(m)
 
 def add_interhub_connections(m, big_warehouses):
-    """Add optional interhub connection lines between main warehouses"""
+    """Add interhub circuit routes based on realistic redistribution planning"""
     
     # Create interhub connections layer (hidden by default)
-    interhub_layer = folium.FeatureGroup(name="🏭 Inter-Hub Connections", show=False)
+    interhub_layer = folium.FeatureGroup(name="🏭 Inter-Hub Relay Circuits", show=False)
     
-    # Create connections between all main warehouses (mesh network)
-    for i, hub1 in enumerate(big_warehouses):
-        for j, hub2 in enumerate(big_warehouses):
-            if i < j:  # Avoid duplicate lines
-                # Calculate distance
-                distance = ((hub1['lat'] - hub2['lat'])**2 + (hub1['lon'] - hub2['lon'])**2)**0.5 * 111
+    # Get realistic interhub vehicle assignments from calculate_interhub_vehicles
+    from simple_analytics import calculate_interhub_vehicles
+    total_vehicles, vehicle_assignments = calculate_interhub_vehicles(big_warehouses)
+    
+    # Create circuit-based connections instead of mesh network
+    circuit_colors = ['#FF6B35', '#004E89', '#00A8CC', '#40BCD8', '#FFBE00']  # Different colors for each circuit
+    
+    for i, assignment in enumerate(vehicle_assignments):
+        circuit_color = circuit_colors[i % len(circuit_colors)]
+        circuit_name = assignment.get('circuit_name', f"Circuit {i+1}")
+        vehicles_needed = assignment.get('vehicles_needed', 1)
+        circuit_distance = assignment.get('circuit_distance', 0)
+        redistribution_volume = assignment.get('redistribution_volume', 0)
+        
+        # Get hub codes from relay_route (backward compatibility)
+        relay_route = assignment.get('relay_route', '')
+        if relay_route:
+            hub_codes = relay_route.split(' → ')
+            hub_codes = [code.strip() for code in hub_codes if code.strip()]
+            
+            # Create circuit path by connecting consecutive hubs
+            circuit_hubs = []
+            for hub_code in hub_codes[:-1]:  # Exclude the last duplicate hub
+                for hub in big_warehouses:
+                    if hub.get('hub_code', f"HUB{hub['id']}") == hub_code:
+                        circuit_hubs.append(hub)
+                        break
+            
+            # Draw circuit connections
+            for j in range(len(circuit_hubs)):
+                current_hub = circuit_hubs[j]
+                next_hub = circuit_hubs[(j + 1) % len(circuit_hubs)]  # Circular connection
                 
-                hub1_code = hub1.get('hub_code', f"HUB{hub1['id']}")
-                hub2_code = hub2.get('hub_code', f"HUB{hub2['id']}")
+                # Calculate segment distance
+                segment_distance = ((current_hub['lat'] - next_hub['lat'])**2 + 
+                                  (current_hub['lon'] - next_hub['lon'])**2)**0.5 * 111
                 
-                # Create interhub connection line
+                # Create directional circuit line
                 folium.PolyLine(
                     locations=[
-                        [hub1['lat'], hub1['lon']],
-                        [hub2['lat'], hub2['lon']]
+                        [current_hub['lat'], current_hub['lon']],
+                        [next_hub['lat'], next_hub['lon']]
                     ],
-                    color='#2196F3',  # Blue for interhub connections
-                    weight=2,
-                    opacity=0.6,
-                    dash_array='10, 5',  # Dashed line to distinguish from auxiliary connections
-                    popup=f"<b>Inter-Hub Route</b><br><b>Between:</b> {hub1_code} ↔ {hub2_code}<br><b>Distance:</b> {distance:.1f} km<br><b>Purpose:</b> Load balancing & backup supply<br><b>Capacity:</b> Flexible based on demand",
-                    tooltip=f"🏭 {hub1_code} ↔ {hub2_code} | {distance:.1f}km"
+                    color=circuit_color,
+                    weight=4,
+                    opacity=0.8,
+                    dash_array='15, 5',  # Dashed line for circuit routes
+                    popup=f"""<b>🚛 {circuit_name}</b><br>
+                    <b>Route:</b> {current_hub.get('hub_code', 'HUB')} → {next_hub.get('hub_code', 'HUB')}<br>
+                    <b>Vehicles:</b> {vehicles_needed} trucks<br>
+                    <b>Segment Distance:</b> {segment_distance:.1f} km<br>
+                    <b>Total Circuit:</b> {circuit_distance:.1f} km<br>
+                    <b>Daily Volume:</b> {redistribution_volume} orders<br>
+                    <b>Schedule:</b> 8:30 AM - 1:30 PM<br>
+                    <b>Purpose:</b> Strategic redistribution for 4 PM last mile deadline""",
+                    tooltip=f"🚛 {circuit_name} | {vehicles_needed} trucks | {redistribution_volume} orders/day"
                 ).add_to(interhub_layer)
+                
+                # Add directional arrow marker at midpoint
+                mid_lat = (current_hub['lat'] + next_hub['lat']) / 2
+                mid_lon = (current_hub['lon'] + next_hub['lon']) / 2
+                
+                folium.Marker(
+                    location=[mid_lat, mid_lon],
+                    icon=folium.DivIcon(
+                        html=f'<div style="color: {circuit_color}; font-size: 16px; text-shadow: 1px 1px 2px white;">→</div>',
+                        icon_size=(20, 20),
+                        icon_anchor=(10, 10)
+                    ),
+                    tooltip=f"Direction: {current_hub.get('hub_code', 'HUB')} → {next_hub.get('hub_code', 'HUB')}"
+                ).add_to(interhub_layer)
+    
+    # Add circuit summary
+    total_vehicles_count = sum([a.get('vehicles_needed', 0) for a in vehicle_assignments])
+    circuit_summary = f"""
+    <b>🚛 Interhub Fleet Summary</b><br>
+    <b>Total Vehicles:</b> {total_vehicles_count} trucks<br>
+    <b>Circuits:</b> {len(vehicle_assignments)}<br>
+    <b>Operating Hours:</b> 8:30 AM - 1:30 PM<br>
+    <b>Cost Structure:</b> ₹1,350 per vehicle per day (2 trips)<br>
+    <b>Monthly Cost:</b> ₹{total_vehicles_count * 1350 * 30:,}
+    """
     
     interhub_layer.add_to(m)
